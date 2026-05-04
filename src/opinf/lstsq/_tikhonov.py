@@ -11,9 +11,11 @@ __all__ = [
 import abc
 import types
 import warnings
-import numpy as np
-import scipy.linalg as la
+# import numpy as np
+# import scipy.linalg as la
+import jax
 import scipy.sparse as sparse
+import jax.numpy as jnp
 
 from .. import errors, utils
 from ..operators import _utils as oputils
@@ -25,7 +27,7 @@ def _symmetrize(A):
 
 
 def _check_sigmas(sigmas):
-    if np.any(sigmas < np.finfo(np.float64).eps):
+    if jnp.any(sigmas < jnp.finfo(jnp.float64).eps):
         raise RuntimeError("zero residual --> posterior is deterministic")
     return sigmas
 
@@ -87,7 +89,7 @@ class _BaseRegularizedSolver(SolverTemplate):
         self.__Ohat0 = Ohat0
 
     # Main methods ------------------------------------------------------------
-    def fit(self, data_matrix: np.ndarray, lhs_matrix: np.ndarray):
+    def fit(self, data_matrix: jnp.ndarray, lhs_matrix: jnp.ndarray):
         r"""Verify dimensions and save the data matrices.
 
         If an :attr:`initial_guess` was provided during the initialization,
@@ -168,7 +170,7 @@ class _BaseRegularizedSolver(SolverTemplate):
         raise NotImplementedError  # pragma: no cover
 
     @abc.abstractmethod
-    def regresidual(self, Ohat: np.ndarray) -> np.ndarray:
+    def regresidual(self, Ohat: jnp.ndarray) -> jnp.ndarray:
         """Compute the residual of the regularized regression problem."""
         raise NotImplementedError  # pragma: no cover
 
@@ -258,7 +260,7 @@ class _BaseRegularizedSolver(SolverTemplate):
 
             options = cls._load_dict(hf, "options")
             kwargs = dict(
-                regularizer=reg, lapack_driver=options["lapack_driver"]
+                regularizer=reg, #lapack_driver=options["lapack_driver"]
             )
 
             if issubclass(cls, TikhonovSolver):
@@ -336,7 +338,7 @@ class L2Solver(_BaseRegularizedSolver):
         _BaseRegularizedSolver.__init__(self, initial_guess=initial_guess)
         self.regularizer = regularizer
         self.__options = types.MappingProxyType(
-            dict(full_matrices=False, lapack_driver=lapack_driver)
+            dict(full_matrices=False)
         )
 
     # Properties --------------------------------------------------------------
@@ -351,7 +353,7 @@ class L2Solver(_BaseRegularizedSolver):
     def regularizer(self, reg):
         """Set the regularization constant."""
         if reg is not None:
-            if not np.isscalar(reg):
+            if not jnp.isscalar(reg):
                 raise TypeError("regularization constant must be a scalar")
             if reg < 0:
                 raise ValueError("regularization constant must be nonnegative")
@@ -368,7 +370,7 @@ class L2Solver(_BaseRegularizedSolver):
         """String representation: dimensions + solver options."""
         kwargs = self._print_kwargs(self.options)
         if self.regularizer is not None:
-            if np.isscalar(self.regularizer):
+            if jnp.isscalar(self.regularizer):
                 regstr = f"{self.regularizer:.4e}"
             else:
                 regstr = f"{self.regularizer.shape}"
@@ -383,7 +385,7 @@ class L2Solver(_BaseRegularizedSolver):
         )
 
     # Main methods ------------------------------------------------------------
-    def fit(self, data_matrix: np.ndarray, lhs_matrix: np.ndarray):
+    def fit(self, data_matrix: jnp.ndarray, lhs_matrix: jnp.ndarray):
         r"""Verify dimensions and compute the singular value decomposition of
         the data matrix in preparation to solve the least-squares problem.
 
@@ -397,7 +399,7 @@ class L2Solver(_BaseRegularizedSolver):
         """
         _BaseRegularizedSolver.fit(self, data_matrix, lhs_matrix)
 
-        Phi, svals, PsiT = la.svd(self.data_matrix, **self.options)
+        Phi, svals, PsiT = jnp.linalg.svd(self.data_matrix, **self.options)
         self._svals = svals
         self._ZPhi = self.lhs_matrix @ Phi
         self._PsiT = PsiT
@@ -405,7 +407,7 @@ class L2Solver(_BaseRegularizedSolver):
         return self
 
     @_require_trained
-    def solve(self) -> np.ndarray:
+    def solve(self) -> jnp.ndarray:
         r"""Solve the Operator Inference regression.
 
         Returns
@@ -463,7 +465,7 @@ class L2Solver(_BaseRegularizedSolver):
         """
         Ohat = self.solve()
         DTD = _symmetrize(self.data_matrix.T @ self.data_matrix)
-        invcov_unscaled = DTD + (self.regularizer**2 * np.eye(self.d))
+        invcov_unscaled = DTD + (self.regularizer**2 * jnp.eye(self.d))
         sigmas = _check_sigmas(self.regresidual(Ohat)) / self.k
         return Ohat, [invcov_unscaled / sig for sig in sigmas]
 
@@ -488,10 +490,10 @@ class L2Solver(_BaseRegularizedSolver):
         if self.regularizer is None:
             raise AttributeError("solver regularizer not set")
         svals2 = self._svals**2 + self.regularizer**2
-        return np.sqrt(svals2.max() / svals2.min())
+        return jnp.sqrt(svals2.max() / svals2.min())
 
     @_require_trained
-    def regresidual(self, Ohat: np.ndarray) -> np.ndarray:
+    def regresidual(self, Ohat: jnp.ndarray) -> jnp.ndarray:
         r"""Compute the residual of the regularized regression objective for
         each row of the given operator matrix.
 
@@ -520,7 +522,7 @@ class L2Solver(_BaseRegularizedSolver):
             raise AttributeError("solver regularizer not set")
         Odiff = self._subtract_initial_guess(Ohat)
         residual = self.residual(Odiff)
-        return residual + (self.regularizer**2 * np.sum(Odiff**2, axis=-1))
+        return residual + (self.regularizer**2 * jnp.sum(Odiff**2, axis=-1))
 
     # Persistence -------------------------------------------------------------
     def save(self, savefile: str, overwrite: bool = False):
@@ -559,7 +561,7 @@ class L2Solver(_BaseRegularizedSolver):
         """Make a copy of the solver."""
         solver = self.__class__(
             regularizer=self.regularizer,
-            lapack_driver=self.options["lapack_driver"],
+            # lapack_driver=self.options["lapack_driver"],
         )
         if self.data_matrix is not None:
             SolverTemplate.fit(solver, self.data_matrix, self.lhs_matrix)
@@ -633,10 +635,10 @@ class L2DecoupledSolver(L2Solver):
     def regularizer(self, regs):
         """Set the regularization constants."""
         if regs is not None:
-            regs = np.array(regs)
+            regs = jnp.array(regs)
             if regs.ndim != 1:
                 raise ValueError("regularizer must be one-dimensional")
-            if np.any(regs < 0):
+            if jnp.any(regs < 0):
                 raise ValueError(
                     "regularization constants must be nonnegative"
                 )
@@ -645,7 +647,7 @@ class L2DecoupledSolver(L2Solver):
             self._check_regularizer_shape()
 
     # Main methods ------------------------------------------------------------
-    def fit(self, data_matrix: np.ndarray, lhs_matrix: np.ndarray):
+    def fit(self, data_matrix: jnp.ndarray, lhs_matrix: jnp.ndarray):
         r"""Verify dimensions and compute the singular value decomposition of
         the data matrix in preparation to solve the least-squares problem.
 
@@ -705,7 +707,7 @@ class L2DecoupledSolver(L2Solver):
         """
         Ohat = self.solve()
         DTD = _symmetrize(self.data_matrix.T @ self.data_matrix)
-        Id = np.eye(self.d)
+        Id = jnp.eye(self.d)
         sigmas = _check_sigmas(self.regresidual(Ohat)) / self.k
         precisions = [
             (DTD + (reg**2 * Id)) / sig
@@ -728,9 +730,9 @@ class L2DecoupledSolver(L2Solver):
         if self.regularizer is None:
             raise AttributeError("solver regularizer not set")
         svals2 = self._svals**2 + self.regularizer.reshape((-1, 1)) ** 2
-        return np.sqrt(svals2.max(axis=1) / svals2.min(axis=1))
+        return jnp.sqrt(svals2.max(axis=1) / svals2.min(axis=1))
 
-    def regresidual(self, Ohat: np.ndarray) -> np.ndarray:
+    def regresidual(self, Ohat: jnp.ndarray) -> jnp.ndarray:
         r"""Compute the residual of the regularized regression objective for
         each row of the given operator matrix.
 
@@ -887,15 +889,15 @@ class TikhonovSolver(_BaseRegularizedSolver):
         if G is not None:
             if sparse.issparse(G):
                 G = G.toarray()
-            elif not isinstance(G, np.ndarray):
-                G = np.array(G)
+            elif not isinstance(G, jnp.ndarray):
+                G = jnp.array(G)
 
             if G.ndim == 1:
-                if np.any(G < 0):
+                if jnp.any(G < 0):
                     raise ValueError(
                         "diagonal regularizer must be positive semi-definite"
                     )
-                G = np.diag(G)
+                G = jnp.diag(G)
 
         self.__reg = G
 
@@ -983,7 +985,7 @@ class TikhonovSolver(_BaseRegularizedSolver):
         has_inputs = [oputils.has_inputs(op) for op in operators]
         inputs_required = any(has_inputs)
         if inputs_required and input_dimension == 0:
-            idx = np.argmax(has_inputs)
+            idx = jnp.argmax(jnp.array(has_inputs))
             raise ValueError(
                 "argument 'input_dimension' required, "
                 f"operators[{idx}] acts on inputs"
@@ -1009,11 +1011,12 @@ class TikhonovSolver(_BaseRegularizedSolver):
                 )
 
         # Construct the regularizer.
-        regularizer = np.zeros(sum(dims))
+        regularizer = jnp.zeros(sum(dims))
         index = 0
         for dim, reg in zip(dims, regularization_parameters):
             endex = index + dim
-            regularizer[index:endex] = reg
+            # regularizer[index:endex] = reg
+            regularizer = regularizer.at[index:endex].set(reg)
             index = endex
 
         return regularizer
@@ -1033,7 +1036,7 @@ class TikhonovSolver(_BaseRegularizedSolver):
         self.__method = method
 
     # Main routines -----------------------------------------------------------
-    def fit(self, data_matrix: np.ndarray, lhs_matrix: np.ndarray):
+    def fit(self, data_matrix: jnp.ndarray, lhs_matrix: jnp.ndarray):
         r"""Verify dimensions and precompute quantities in preparation to
         solve the least-squares problem.
 
@@ -1050,7 +1053,7 @@ class TikhonovSolver(_BaseRegularizedSolver):
         D, Z = self.data_matrix, self.lhs_matrix
 
         # Pad lhs matrix for "svd" solve.
-        self._ZtPad = np.vstack((Z.T, np.zeros((self.d, self.r))))
+        self._ZtPad = jnp.vstack((Z.T, jnp.zeros((self.d, self.r))))
 
         # Precompute normal equations terms for "normal" solve.
         self._DtD = D.T @ D
@@ -1059,7 +1062,7 @@ class TikhonovSolver(_BaseRegularizedSolver):
         return self
 
     @_require_trained
-    def solve(self) -> np.ndarray:
+    def solve(self) -> jnp.ndarray:
         r"""Solve the Operator Inference regression.
 
         Returns
@@ -1070,11 +1073,11 @@ class TikhonovSolver(_BaseRegularizedSolver):
         if self.regularizer is None:
             raise AttributeError("solver regularizer not set")
         if self.method == "lstsq":
-            DPad = np.vstack((self.data_matrix, self.regularizer))
-            Ohat = la.lstsq(DPad, self._ZtPad, **self.options)[0].T
+            DPad = jnp.vstack((self.data_matrix, self.regularizer))
+            Ohat = jnp.linalg.lstsq(DPad, self._ZtPad, rcond=self.options["cond"])[0].T
         elif self.method == "normal":
             regD = self._DtD + (self.regularizer.T @ self.regularizer)
-            Ohat = la.solve(regD, self._DtZt, assume_a="pos").T
+            Ohat = jax.scipy.linalg.solve(regD, self._DtZt, assume_a="pos").T
         return self._add_initial_guess(Ohat)
 
     def posterior(self):
@@ -1138,10 +1141,10 @@ class TikhonovSolver(_BaseRegularizedSolver):
         """
         if self.regularizer is None:
             raise AttributeError("solver regularizer not set")
-        return np.linalg.cond(np.vstack((self.data_matrix, self.regularizer)))
+        return jnp.linalg.cond(jnp.vstack((self.data_matrix, self.regularizer)))
 
     @_require_trained
-    def regresidual(self, Ohat: np.ndarray) -> np.ndarray:
+    def regresidual(self, Ohat: jnp.ndarray) -> jnp.ndarray:
         r"""Compute the residual of the regularized regression objective for
         each row of the given operator matrix.
 
@@ -1170,7 +1173,7 @@ class TikhonovSolver(_BaseRegularizedSolver):
             raise AttributeError("solver regularizer not set")
         Odiff = self._subtract_initial_guess(Ohat)
         residual = self.residual(Odiff)
-        return residual + np.sum((self.regularizer @ Odiff.T) ** 2, axis=0)
+        return residual + jnp.sum((self.regularizer @ Odiff.T) ** 2, axis=0)
 
     def save(self, savefile: str, overwrite: bool = False):
         """Serialize the solver, saving it in HDF5 format.
@@ -1315,15 +1318,15 @@ class TikhonovDecoupledSolver(TikhonovSolver):
             for G in Gs:
                 if sparse.issparse(G):
                     G = G.toarray()
-                elif not isinstance(G, np.ndarray):
-                    G = np.array(G)
+                elif not isinstance(G, jnp.ndarray):
+                    G = jnp.array(G)
                 if G.ndim == 1:
-                    if np.any(G < 0):
+                    if jnp.any(G < 0):
                         raise ValueError(
                             "diagonal regularizer must be "
                             "positive semi-definite"
                         )
-                    G = np.diag(G)
+                    G = jnp.diag(G)
                 regs.append(G)
 
         self.__regs = regs
@@ -1332,7 +1335,7 @@ class TikhonovDecoupledSolver(TikhonovSolver):
 
     # Main methods ------------------------------------------------------------
     @_require_trained
-    def solve(self) -> np.ndarray:
+    def solve(self) -> jnp.ndarray:
         r"""Solve the Operator Inference regression.
 
         Returns
@@ -1342,16 +1345,16 @@ class TikhonovDecoupledSolver(TikhonovSolver):
         """
         if self.regularizer is None:
             raise AttributeError("solver regularizer not set")
-        Ohat = np.empty((self.r, self.d))
+        Ohat = jnp.empty((self.r, self.d))
 
         # Solve each independent regression problem (sequentially for now).
         for i, Gamma in enumerate(self.regularizer):
             if self.method == "lstsq":
-                Dpad = np.vstack((self.data_matrix, Gamma))
-                Ohat[i] = la.lstsq(Dpad, self._ZtPad[:, i])[0]
+                Dpad = jnp.vstack((self.data_matrix, Gamma))
+                Ohat = Ohat.at[i].set(jnp.linalg.lstsq(Dpad, self._ZtPad[:, i])[0])
             elif self.method == "normal":
                 regD = self._DtD + Gamma.T @ Gamma
-                Ohat[i] = la.solve(regD, self._DtZt[:, i], assume_a="pos")
+                Ohat = Ohat.at[i].set(jax.scipy.linalg.solve(regD, self._DtZt[:, i], assume_a="pos"))
         return self._add_initial_guess(Ohat)
 
     def posterior(self):
@@ -1417,15 +1420,15 @@ class TikhonovDecoupledSolver(TikhonovSolver):
         """
         if self.regularizer is None:
             raise AttributeError("solver regularizer not set")
-        return np.array(
+        return jnp.array(
             [
-                np.linalg.cond(np.vstack((self.data_matrix, G)))
+                jnp.linalg.cond(jnp.vstack((self.data_matrix, G)))
                 for G in self.regularizer
             ]
         )
 
     @_require_trained
-    def regresidual(self, Ohat: np.ndarray) -> np.ndarray:
+    def regresidual(self, Ohat: jnp.ndarray) -> jnp.ndarray:
         r"""Compute the residual of the regularized regression objective for
         each row of the given operator matrix.
 
@@ -1456,5 +1459,5 @@ class TikhonovDecoupledSolver(TikhonovSolver):
             raise AttributeError("solver regularizer not set")
         Odiff = self._subtract_initial_guess(Ohat)
         residual = self.residual(Odiff)
-        rg = [np.sum((G @ oi) ** 2) for G, oi in zip(self.regularizer, Odiff)]
-        return residual + np.array(rg)
+        rg = [jnp.sum((G @ oi) ** 2) for G, oi in zip(self.regularizer, Odiff)]
+        return residual + jnp.array(rg)

@@ -5,7 +5,7 @@ import abc
 import pytest
 import numpy as np
 import scipy.linalg as la
-
+import jax.numpy as jnp
 import opinf
 
 
@@ -163,7 +163,7 @@ class _TestSolverTemplate(abc.ABC):
             # Two-dimensional case.
             Ohat = np.random.standard_normal((r, d))
             residual = solver.residual(Ohat)
-            assert isinstance(residual, np.ndarray)
+            assert isinstance(residual, jnp.ndarray)
             assert residual.shape == (r,)
             for i in range(r):
                 assert np.isclose(
@@ -177,7 +177,7 @@ class _TestSolverTemplate(abc.ABC):
                 assert solver.r == 1
                 ohat = np.random.standard_normal(d)
                 residual = solver.residual(ohat)
-                assert isinstance(residual, np.ndarray)
+                assert isinstance(residual, jnp.ndarray)
                 assert residual.shape == (1,)
                 assert np.isclose(residual[0], la.norm(D @ ohat - z) ** 2)
 
@@ -228,13 +228,13 @@ class TestPlainSolver(_TestSolverTemplate):
         # Set up and manually solve a least-squares problem.
         D = np.random.standard_normal((k, d))
         Z = np.random.random((r, k))
-        U, s, Vt = la.svd(D, full_matrices=False)
-        Ohat_true = Z @ U @ np.diag(1 / s) @ Vt
+        U, s, Vt = jnp.linalg.svd(D, full_matrices=False)
+        Ohat_true = Z @ U @ jnp.diag(1 / s) @ Vt
 
         # Check the least-squares solution.
         for solver in self.get_solvers():
             Ohat = solver.fit(D, Z).solve()
-            assert np.allclose(Ohat, Ohat_true)
+            assert jnp.allclose(Ohat, Ohat_true)
 
 
 if __name__ == "__main__":

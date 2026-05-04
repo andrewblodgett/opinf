@@ -5,7 +5,7 @@ import pytest
 import numpy as np
 import scipy.linalg as la
 import scipy.sparse as sparse
-
+import jax.numpy as jnp
 import opinf
 
 try:
@@ -44,9 +44,9 @@ class _TestBaseRegularizedSolver(_TestSolverTemplate):
             assert len(means) == r
             assert len(precisions) == r
             for mean, prec in zip(means, precisions):
-                assert isinstance(mean, np.ndarray)
+                assert isinstance(mean, jnp.ndarray)
                 assert mean.shape == (d,)
-                assert isinstance(prec, np.ndarray)
+                assert isinstance(prec, jnp.ndarray)
                 assert prec.shape == (d, d)
 
         # Detect perfect regression.
@@ -109,11 +109,11 @@ class TestL2Solver(_TestBaseRegularizedSolver):
         Z = np.random.random((r, k))
 
         def _check(o1, o2):
-            assert isinstance(o2, np.ndarray)
+            assert isinstance(o2, jnp.ndarray)
             if o1.ndim == 1:
                 o1 = o1.reshape((1, -1))
             assert o2.shape == o1.shape
-            assert np.allclose(o2, o1)
+            assert jnp.allclose(o2, o1)
 
         solver = self.Solver().fit(D, Z)
         with pytest.raises(AttributeError) as ex:
@@ -140,8 +140,8 @@ class TestL2Solver(_TestBaseRegularizedSolver):
 
             else:  # With regularization.
                 # Z.ndim = 2.
-                Dpad = np.vstack((D, solver.regularizer * np.eye(d)))
-                Zpad = np.concatenate((Z.T, np.zeros((d, r))))
+                Dpad = jnp.vstack((D, solver.regularizer * jnp.eye(d)))
+                Zpad = jnp.concatenate((Z.T, jnp.zeros((d, r))))
                 Ohat1 = la.lstsq(Dpad, Zpad)[0].T
                 Ohat2 = solver.fit(D, Z).solve()
                 _check(Ohat1, Ohat2)
@@ -163,15 +163,15 @@ class TestL2Solver(_TestBaseRegularizedSolver):
         def _singletest(reg, regcondtrue):
             solver.regularizer = reg
             regcond = solver.regcond()
-            assert np.isclose(regcond, regcondtrue)
+            assert jnp.isclose(regcond, regcondtrue)
 
         # Square, diagonal tests.
-        A = np.diag(np.arange(1, d + 1))
-        B = np.zeros((r, d))
+        A = jnp.diag(jnp.arange(1, d + 1))
+        B = jnp.zeros((r, d))
         solver.fit(A, B)
-        assert np.isclose(solver.regcond(), d)
+        assert jnp.isclose(solver.regcond(), d)
         for reg in np.random.uniform(1, 10, ntests):
-            regcond_true = np.sqrt((d**2 + reg**2) / (1 + reg**2))
+            regcond_true = jnp.sqrt((d**2 + reg**2) / (1 + reg**2))
             _singletest(reg, regcond_true)
 
         # Rectangular, dense tests.
@@ -179,7 +179,7 @@ class TestL2Solver(_TestBaseRegularizedSolver):
         B = np.random.standard_normal((r, k))
         solver.fit(A, B)
         for reg in np.random.uniform(1, 10, ntests):
-            regcond_true = np.linalg.cond(np.vstack((A, reg * np.eye(d))))
+            regcond_true = jnp.linalg.cond(jnp.vstack((A, reg * jnp.eye(d))))
             _singletest(reg, regcond_true)
 
         # No regularizer.
@@ -214,11 +214,11 @@ class TestL2Solver(_TestBaseRegularizedSolver):
         for reg in [0] + np.random.uniform(1, 10, ntests).tolist():
             solver.regularizer = reg
             residual = solver.regresidual(Ohat)
-            assert isinstance(residual, np.ndarray)
+            assert isinstance(residual, jnp.ndarray)
             assert residual.shape == (r,)
             ans = la.norm(A @ Ohat.T - B.T, ord=2, axis=0) ** 2
             ans += la.norm(reg * Ohat.T, ord=2, axis=0) ** 2
-            assert np.allclose(residual, ans)
+            assert jnp.allclose(residual, ans)
 
         # One-dimensional tests.
         b = B[0, :]
@@ -228,7 +228,7 @@ class TestL2Solver(_TestBaseRegularizedSolver):
         for reg in [0] + np.random.uniform(0, 10, ntests).tolist():
             solver.regularizer = reg
             residual = solver.regresidual(x)
-            assert isinstance(residual, np.ndarray)
+            assert isinstance(residual, jnp.ndarray)
             assert residual.shape == (1,)
             ans = np.linalg.norm(A @ x - b) ** 2 + np.linalg.norm(reg * x) ** 2
             assert np.isclose(residual[0], ans)
@@ -314,7 +314,7 @@ class TestL2DecoupledSolver(_TestBaseRegularizedSolver):
             Ohat1 = np.array(Ohat1)
 
             Ohat2 = solver.fit(D, Z).solve()
-            assert isinstance(Ohat2, np.ndarray)
+            assert isinstance(Ohat2, jnp.ndarray)
             assert Ohat2.shape == Ohat1.shape
             assert np.allclose(Ohat2, Ohat1)
 
@@ -390,7 +390,7 @@ class TestL2DecoupledSolver(_TestBaseRegularizedSolver):
         ls = np.concatenate([[0], np.random.uniform(1, 10, r - 1)])
         solver.regularizer = ls
         residual = solver.regresidual(Ohat)
-        assert isinstance(residual, np.ndarray)
+        assert isinstance(residual, jnp.ndarray)
         assert residual.shape == (r,)
         ans = la.norm(A @ Ohat.T - B.T, ord=2, axis=0) ** 2
         ans += np.array(
@@ -439,10 +439,10 @@ class TestTikhonovSolver(_TestBaseRegularizedSolver):
         solver = self.Solver(Z, method="normal")
         solver.regularizer = sparse.diags(Zdiag)
         assert isinstance(solver.regularizer, np.ndarray)
-        assert np.allclose(solver.regularizer, np.diag(Zdiag))
+        assert jnp.allclose(solver.regularizer, jnp.diag(Zdiag))
         solver.regularizer = Zdiag
-        assert isinstance(solver.regularizer, np.ndarray)
-        assert np.all(solver.regularizer == np.diag(Zdiag))
+        assert isinstance(solver.regularizer, jnp.ndarray)
+        assert jnp.all(solver.regularizer == jnp.diag(Zdiag))
 
         P = [1] * d
         P[-1] = -1
@@ -457,7 +457,7 @@ class TestTikhonovSolver(_TestBaseRegularizedSolver):
         solver.fit(A, B)
 
         # Try with bad regularizer shapes.
-        P = np.empty((d - 1, d - 1))
+        P = jnp.empty((d - 1, d - 1))
         with pytest.raises(ValueError) as ex:
             solver.regularizer = P
         assert ex.value.args[0] == (
@@ -465,9 +465,9 @@ class TestTikhonovSolver(_TestBaseRegularizedSolver):
         )
 
         # Correct usage
-        solver.regularizer = np.full(d, 2)
+        solver.regularizer = jnp.full(d, 2)
         assert solver.regularizer.shape == (d, d)
-        assert np.all(solver.regularizer == 2 * np.eye(d))
+        assert jnp.all(solver.regularizer == 2 * jnp.eye(d))
 
         repr(solver)
         solver.method = "normal"
@@ -685,11 +685,11 @@ class TestTikhonovSolver(_TestBaseRegularizedSolver):
             P = np.random.uniform(1, 10, d)
             solver.regularizer = P
             residual = solver.regresidual(Ohat)
-            assert isinstance(residual, np.ndarray)
+            assert isinstance(residual, jnp.ndarray)
             assert residual.shape == (r,)
             ans = la.norm(A @ Ohat.T - B.T, ord=2, axis=0) ** 2
             ans += la.norm(np.diag(P) @ Ohat.T, ord=2, axis=0) ** 2
-            assert np.allclose(residual, ans)
+            assert jnp.allclose(residual, ans)
 
         # One-dimensional tests.
         b = B[0, :]
@@ -700,7 +700,7 @@ class TestTikhonovSolver(_TestBaseRegularizedSolver):
             P = np.random.uniform(1, 10, d)
             solver.regularizer = P
             residual = solver.regresidual(x)
-            assert isinstance(residual, np.ndarray)
+            assert isinstance(residual, jnp.ndarray)
             assert residual.shape == (1,)
             ans = np.linalg.norm(A @ x - b) ** 2 + np.linalg.norm(P * x) ** 2
             assert np.isclose(residual[0], ans)
@@ -792,43 +792,43 @@ class TestTikhonovDecoupledSolver(_TestBaseRegularizedSolver):
         assert ex.value.args[0] == "solver not trained, call fit()"
         solver.fit(A, B)
 
-        Apad1 = np.vstack((A, Ps[0]))
-        Apad2 = np.vstack((A, np.diag(Ps[1])))
-        Bpad = np.vstack((B.T, np.zeros((d, 2))))
-        xx1 = la.lstsq(Apad1, Bpad[:, 0])[0]
-        xx2 = la.lstsq(Apad2, Bpad[:, 1])[0]
-        X1 = np.array([xx1, xx2])
+        Apad1 = jnp.vstack((A, Ps[0]))
+        Apad2 = jnp.vstack((A, jnp.diag(Ps[1])))
+        Bpad = jnp.vstack((B.T, jnp.zeros((d, 2))))
+        xx1 = jnp.linalg.lstsq(Apad1, Bpad[:, 0])[0]
+        xx2 = jnp.linalg.lstsq(Apad2, Bpad[:, 1])[0]
+        X1 = jnp.array([xx1, xx2])
         X2 = solver.solve()
-        assert np.allclose(X1, X2)
+        assert jnp.allclose(X1, X2)
 
         # Test with a severely ill-conditioned system.
         A = np.random.standard_normal((k, d))
         U, s, Vt = la.svd(A, full_matrices=False)
         s[-5:] = 1e-18
-        s /= np.arange(1, s.size + 1) ** 2
-        A = U @ np.diag(s) @ Vt
+        s /= jnp.arange(1, s.size + 1) ** 2
+        A = U @ jnp.diag(s) @ Vt
         B = np.random.standard_normal((r, k))
-        assert np.linalg.cond(A) > 1e15
+        assert jnp.linalg.cond(A) > 1e15
 
         # No regularization.
         solver = self.Solver([Z] * r).fit(A, B)
-        Z = np.zeros(d)
-        X1 = la.lstsq(A, B.T)[0].T
+        Z = jnp.zeros(d)
+        X1 = jnp.linalg.lstsq(A, B.T)[0].T
         X2 = solver.solve()
-        assert np.allclose(X1, X2)
+        assert jnp.allclose(X1, X2)
 
         # Some regularization.
         for method in "lstsq", "normal":
             solver.method = method
             solver.regularizer = Ps[:2]
-            Apad1 = np.vstack((A, Ps[0]))
-            Apad2 = np.vstack((A, np.diag(Ps[1])))
-            Bpad = np.vstack((B.T, np.zeros((d, 2))))
-            xx1 = la.lstsq(Apad1, Bpad[:, 0])[0]
-            xx2 = la.lstsq(Apad2, Bpad[:, 1])[0]
-            X1 = np.array([xx1, xx2])
+            Apad1 = jnp.vstack((A, Ps[0]))
+            Apad2 = jnp.vstack((A, jnp.diag(Ps[1])))
+            Bpad = jnp.vstack((B.T, jnp.zeros((d, 2))))
+            xx1 = jnp.linalg.lstsq(Apad1, Bpad[:, 0])[0]
+            xx2 = jnp.linalg.lstsq(Apad2, Bpad[:, 1])[0]
+            X1 = jnp.array([xx1, xx2])
             X2 = solver.solve()
-            assert np.allclose(X1, X2)
+            assert jnp.allclose(X1, X2)
 
     # Post-processing ---------------------------------------------------------
     def test_cond(self, k=20):
@@ -876,7 +876,7 @@ class TestTikhonovDecoupledSolver(_TestBaseRegularizedSolver):
         residual = solver.regresidual(Ohat)
         for G, ohat in zip(Ps, Ohat):
             print(G.shape, G, ohat.shape, ohat, sep="\n")
-        assert isinstance(residual, np.ndarray)
+        assert isinstance(residual, jnp.ndarray)
         assert residual.shape == (r,)
         ans = la.norm(A @ Ohat.T - B.T, ord=2, axis=0) ** 2
         ans += np.array(

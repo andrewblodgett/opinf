@@ -11,8 +11,10 @@ import os
 import abc
 import copy
 import warnings
-import numpy as np
-import scipy.linalg as la
+# import numpy as np
+# import scipy.linalg as la
+import jax
+import jax.numpy as jnp
 
 from .. import errors, utils
 
@@ -97,12 +99,12 @@ class SolverTemplate(abc.ABC):
 
     # Properties: matrices ----------------------------------------------------
     @property
-    def data_matrix(self) -> np.ndarray:
+    def data_matrix(self) -> jnp.ndarray:
         r""":math:`k \times d` data matrix :math:`\D`."""
         return self.__D
 
     @property
-    def lhs_matrix(self) -> np.ndarray:
+    def lhs_matrix(self) -> jnp.ndarray:
         r""":math:`r \times k` left-hand side data :math:`\Z`."""
         return self.__Z
 
@@ -151,7 +153,7 @@ class SolverTemplate(abc.ABC):
         return ", ".join([f"{key}={repr(val)}" for key, val in opts.items()])
 
     # Main methods -----------------------------------------------------------
-    def fit(self, data_matrix: np.ndarray, lhs_matrix: np.ndarray):
+    def fit(self, data_matrix: jnp.ndarray, lhs_matrix: jnp.ndarray):
         r"""Verify dimensions and save the data matrices.
 
         Parameters
@@ -181,7 +183,7 @@ class SolverTemplate(abc.ABC):
         return self
 
     @abc.abstractmethod
-    def solve(self) -> np.ndarray:
+    def solve(self) -> jnp.ndarray:
         r"""Solve the Operator Inference regression.
 
         Returns
@@ -201,10 +203,10 @@ class SolverTemplate(abc.ABC):
         -------
         conditionnumber : float
         """
-        return np.linalg.cond(self.data_matrix)
+        return jnp.linalg.cond(self.data_matrix)
 
     @_require_trained
-    def residual(self, Ohat: np.ndarray) -> np.ndarray:
+    def residual(self, Ohat: jnp.ndarray) -> jnp.ndarray:
         r"""Compute the residual of the :math:`2`-norm regression objective for
         each row of the given operator matrix.
 
@@ -233,7 +235,7 @@ class SolverTemplate(abc.ABC):
             raise errors.DimensionalityError(
                 f"Ohat.shape = {Ohat.shape} != {shape} = (r, d)"
             )
-        return np.sum(
+        return jnp.sum(
             (self.data_matrix @ Ohat.T - self.lhs_matrix.T) ** 2,
             axis=0,
         )
@@ -322,7 +324,7 @@ class SolverTemplate(abc.ABC):
                 raise errors.VerificationError(
                     f"{operation} does not preserve problem dimensions"
                 )
-            if not np.allclose(obj2.solve(), Ohat1):
+            if not jnp.allclose(obj2.solve(), Ohat1):
                 raise errors.VerificationError(
                     f"{operation} does not preserve the result of solve()"
                 )
@@ -377,7 +379,7 @@ class PlainSolver(SolverTemplate):
     def __init__(self, cond=None, lapack_driver=None):
         """Store least-squares solver options."""
         SolverTemplate.__init__(self)
-        self.__options = dict(cond=cond, lapack_driver=lapack_driver)
+        self.__options = dict(cond=cond)
 
     @property
     def options(self):
@@ -419,7 +421,7 @@ class PlainSolver(SolverTemplate):
         Ohat : (r, d) ndarray
             Operator matrix :math:`\Ohat` (not its transpose!).
         """
-        results = la.lstsq(self.data_matrix, self.lhs_matrix.T, **self.options)
+        results = jnp.linalg.lstsq(self.data_matrix, self.lhs_matrix.T, rcond=self.options["cond"])
         return results[0].T
 
     # Persistence -------------------------------------------------------------
@@ -474,7 +476,7 @@ class PlainSolver(SolverTemplate):
         """Make a copy of the solver."""
         solver = self.__class__(
             cond=self.options["cond"],
-            lapack_driver=self.options["lapack_driver"],
+            lapack_driver=None,
         )
         if self.data_matrix is not None:
             SolverTemplate.fit(solver, self.data_matrix, self.lhs_matrix)
