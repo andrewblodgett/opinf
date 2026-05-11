@@ -61,7 +61,11 @@ repository = "https://github.com/operator-inference/opinf.git"
 line-length = 79
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "tests_jax"]
 
 [tool.setuptools.dynamic]
 version = { attr = "opinf.__version__" }
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+packages = ["opinf", "opinf_jax"]
