@@ -130,3 +130,133 @@ class ConstantOperator(OpInfOperator):
             Input dimension.
         """
         return 1
+    
+class LinearOperator(OpInfOperator):
+    def __init__(self, entries):
+        if jnp.isscalar(entries):
+            entries = jnp.atleast_2d(entries)
+        self._validate_entries(entries)
+        if entries.ndim != 2:
+            raise ValueError("LinearOperator entries must be two-dimensional")
+        if entries.shape[0] != entries.shape[1]:
+            raise ValueError("LinearOperator entries must be square (r x r)")
+        self._entries = entries
+
+    @staticmethod
+    def _str(statestr, inputstr=None):
+        return f"A{statestr}"
+
+    @property
+    def entries(self):
+        r"""Operator matrix :math:`\Ahat`."""
+        return OpInfOperator.entries.fget(self)
+    
+    @property
+    def shape(self):
+        r"""Shape :math:`(r, r)` of the operator matrix :math:`\Ahat`."""
+        return OpInfOperator.shape.fget(self)
+    
+    def apply(self, state, input_=None):
+        r"""Apply the operator to the given state / input:
+        :math:`\Ophat_{\ell}(\qhat,\u) = \Ahat\qhat`.
+
+        Parameters
+        ----------
+        state : (r,) ndarray
+            State vector.
+        input_ : (m,) ndarray or None
+            Input vector (not used).
+
+        Returns
+        -------
+        out : (r,) ndarray
+            Application :math:`\Ahat\qhat`.
+        """
+        if self.entries.shape[0] == 1:
+            return self.entries[0, 0] * state  # r = 1.
+        return self.entries @ state  # r > 1.
+    
+    def jacobian(self, state=None, input_=None):
+        r"""Construct the state Jacobian of the operator:
+        :math:`\ddqhat\Ophat_{\ell}(\qhat,\u)=\Ahat`.
+
+        Parameters
+        ----------
+        state : (r,) ndarray or None
+            State vector.
+        input_ : (m,) ndarray or None
+            Input vector (not used).
+
+        Returns
+        -------
+        jac : (r, r) ndarray
+            State Jacobian :math:`\Ahat`.
+        """
+        return self.entries
+    
+    def galerkin(self, Vr, Wr=None):
+        r"""Return the Galerkin projection of the operator,
+        :math:`\Ahat = (\Wr\trp\Vr)^{-1}\Wr\trp\A\Vr`.
+
+        Parameters
+        ----------
+        Vr : (n, r) ndarray
+            Basis for the trial space.
+        Wr : (n, r) ndarray or None
+            Basis for the test space. If ``None``, defaults to ``Vr``.
+
+        Returns
+        -------
+        projected : :class:`opinf.operators.LinearOperator`
+            Projected operator.
+        """
+        return self._galerkin(Vr, Wr, lambda A, V: A @ V)
+    
+    @staticmethod
+    def datablock(states, inputs=None):
+        r"""Return the data matrix block corresponding to the operator,
+        the ``states``.
+
+        Since :math:`\Ophat_\ell(\qhat,\u) = \Ohat_{\ell}\d_{\ell}(\qhat,\u)`
+        with :math:`\Ohat_{\ell} = \Ahat` and
+        :math:`\d_{\ell}(\qhat,\u) = \qhat`, the data block is
+
+        .. math::
+           \D\trp
+           = \left[\begin{array}{ccc}
+           \d_{\ell}(\qhat_0,\u_0)
+           & \cdots &
+           \d_{\ell}(\qhat_{k-1},\u_{k-1})
+           \end{array}\right]
+           = \left[\begin{array}{ccc}
+           \qhat_0 & \cdots & \qhat_{k-1}
+           \end{array}\right]
+           \in \RR^{r \times k}.
+
+        Parameters
+        ----------
+        states : (r, k) or (k,) ndarray
+            State vectors. Each column is a single state vector.
+            If one dimensional, it is assumed that :math:`r = 1`.
+        inputs : (m, k) or (k,) ndarray or None
+            Input vectors (not used).
+
+        Returns
+        -------
+        state : (r, k) ndarray
+            State vectors. Each column is a single state vector.
+        """
+        return jnp.atleast_2d(states)
+
+    @staticmethod
+    def operator_dimension(r, m=None):
+        r"""Column dimension :math:`r` of the operator matrix :math:`\Ahat`.
+
+        Parameters
+        ----------
+        r : int
+            State dimension.
+        m : int or None
+            Input dimension.
+        """
+        return r

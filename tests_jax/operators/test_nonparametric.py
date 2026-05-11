@@ -1,7 +1,7 @@
 import abc
 import pytest
 import jax.numpy as jnp
-
+import scipy.sparse as sparse
 import jax.random as jrandom
 
 import opinf
@@ -14,15 +14,6 @@ except ImportError:
     from test_base import _TestOpInfOperator
 
 class _TestNonparametricOperator(_TestOpInfOperator):
-    
-    def _next_key(self):
-        """Helper to manage JAX PRNG state internally for tests."""
-        if not hasattr(self, '_key'):
-            # Initialize the base key on first use
-            self._key = jrandom.key(12345)
-        # Split the key: save one for future state, return the other
-        self._key, subkey = jrandom.split(self._key)
-        return subkey
 
     def get_operator(self, r, m=None):
         return self.Operator(entries=self.get_entries(r, m))
@@ -153,3 +144,109 @@ class TestConstantOperator(_TestNonparametricOperator):
         assert self.Operator.operator_dimension() == 1
         assert self.Operator.operator_dimension(4) == 1
         assert self.Operator.operator_dimension(1, 6) == 1
+
+class TestLinearOperator(_TestNonparametricOperator):
+    """Test operators._nonparametric.LinearOperator."""
+
+    Operator = _module.LinearOperator
+    has_inputs = False
+
+    def test_set_entries(self):
+
+        # Too many dimensions.
+        Abad = jnp.arange(12).reshape((2, 2, 3))
+        with pytest.raises(ValueError) as ex:
+            op = self.Operator(Abad)
+        assert ex.value.args[0] == (
+            "LinearOperator entries must be two-dimensional"
+        )
+
+        # Nonsquare.
+        Abad = Abad.reshape((4, 3))
+        with pytest.raises(ValueError) as ex:
+            op = self.Operator(Abad)
+        assert ex.value.args[0] == (
+            "LinearOperator entries must be square (r x r)"
+        )
+
+        # Correct square usage.
+        A = Abad[:3, :3]
+        op = self.Operator(A)
+        assert op.entries is A
+        assert op.state_dimension == 3
+
+        # Special case: r = 1, scalar A.
+        a = jrandom.uniform(self._next_key())
+        op = self.Operator(a)
+        assert op.shape == (1, 1)
+        assert op.state_dimension == 1
+        assert op[0, 0] == a
+
+        # Sparse matrix.
+        A = jrandom.uniform(self._next_key(), shape=(100, 100))
+        A = A.at[A < 0.95].set(0)
+        # A = sparse.csr_matrix(A)
+        op = self.Operator(A)
+        assert op.state_dimension == 100
+        assert op.shape == (100, 100)
+        # assert sparse.issparse(op.entries)
+
+    def test_apply(self, k=20):
+        """Test apply()/__call__()."""
+
+        def _test_single(r):
+            A = jrandom.uniform(self._next_key(), shape=(r, r))
+            op = self.Operator(A)
+            # Evaluation for a single vector.
+            q = jrandom.uniform(self._next_key(), shape=r)
+            assert jnp.allclose(op.apply(q), A @ q)
+            # Vectorized evaluation.
+            Q = jrandom.uniform(self._next_key(), shape=(r, k))
+            assert jnp.allclose(op.apply(Q), A @ Q)
+
+        _test_single(10)
+        _test_single(4)
+        _test_single(1)
+
+        # Special case: A is 1x1 and q is a scalar.
+        A = jrandom.uniform(self._next_key())
+        op = self.Operator(A)
+        # Evaluation for a single vector.
+        q = jrandom.uniform(self._next_key())
+        out = op.apply(q)
+        assert jnp.isscalar(out)
+        assert jnp.allclose(out, A * q)
+        # Vectorized evaluation.
+        Q = jrandom.uniform(self._next_key(), shape=k)
+        out = op.apply(Q)
+        assert out.shape == (k,)
+        assert jnp.allclose(out, A * Q)
+
+    def test_jacobian(self, r=9):
+        """Test jacobian()."""
+        A = jrandom.uniform(self._next_key(), shape=(r, r))
+        op = self.Operator(A)
+        jac = op.jacobian(jrandom.uniform(self._next_key(), r))
+        assert jac.shape == A.shape
+        assert jnp.all(jac == A)
+
+    def test_datablock(self, m=3, k=20, r=10):
+        """Test datablock()."""
+        op = self.get_operator(r)
+
+        state_ = jrandom.uniform(self._next_key(), shape=(r, k))
+        input_ = jrandom.uniform(self._next_key(), shape=(m, k))
+
+        assert jnp.array_equal(op.datablock(state_, input_), state_)
+        assert jnp.array_equal(op.datablock(state_, None), state_)
+
+        # Special case: r = 1.
+        state_ = jrandom.uniform(self._next_key(), shape=k)
+        block = op.datablock(state_)
+        assert block.shape == (1, k)
+        assert jnp.all(block[0] == state_)
+
+    def test_operator_dimension(self):
+        """Test operator_dimension()."""
+        assert self.Operator.operator_dimension(2) == 2
+        assert self.Operator.operator_dimension(4, 6) == 4

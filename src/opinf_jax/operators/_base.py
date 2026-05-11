@@ -46,6 +46,40 @@ class OpInfOperator(OperatorTemplate):
         """
         return None if self.entries is None else self.entries.shape[0]
 
+    # Magic methods -----------------------------------------------------------
+    def __getitem__(self, key):
+        """Slice into the entries of the operator."""
+        return None if self.entries is None else self.entries[key]
+
+    def __eq__(self, other):
+        """Two OpInf operators are equal if they are of the same class
+        and have the same ``entries`` array.
+        """
+        if not isinstance(other, self.__class__):
+            return False
+        if (self.entries is None and other.entries is not None) or (
+            self.entries is not None and other.entries is None
+        ):
+            return False
+        if self.entries is not None:
+            if self.shape != other.shape:
+                return False
+            return jnp.all(self.entries == other.entries)
+        return True
+
+    def __add__(self, other):
+        """Nonparametric operators are linear in their entries."""
+        if (ocls := other.__class__) is not (scls := self.__class__):
+            raise TypeError(
+                f"can't add object of type '{ocls.__name__}' "
+                f"to object of type '{scls.__name__}'"
+            )
+        return scls(self.entries + other.entries)
+
+    def __str__(self):
+        out = OperatorTemplate.__str__(self)
+        return out + f"\n  entries.shape:   {self.shape}"
+
     @utils.requires("entries")
     def jacobian(self, state, input_=None) -> jax.Array:  # pragma: no cover
         return 0

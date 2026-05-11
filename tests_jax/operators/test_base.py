@@ -2,6 +2,8 @@ import abc
 import pytest
 import jax.numpy as jnp
 import scipy.sparse as sparse
+import jax.random as jrandom
+
 
 import opinf
 
@@ -29,6 +31,15 @@ class _TestOperatorTemplate(abc.ABC):
             Instantiated operator.
         """
         raise NotImplementedError
+    
+    def _next_key(self):
+        """Helper to manage JAX PRNG state internally for tests."""
+        if not hasattr(self, '_key'):
+            # Initialize the base key on first use
+            self._key = jrandom.key(12345)
+        # Split the key: save one for future state, return the other
+        self._key, subkey = jrandom.split(self._key)
+        return subkey
 
     # Properties --------------------------------------------------------------
     def test_dimensions(self, r=10, m=2):
