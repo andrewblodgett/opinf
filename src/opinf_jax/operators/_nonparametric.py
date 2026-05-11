@@ -260,3 +260,205 @@ class LinearOperator(OpInfOperator):
             Input dimension.
         """
         return r
+    
+class QuadraticOperator(OpInfOperator):
+    def __init__(self, entries):
+        if jnp.isscalar(entries) or jnp.shape(entries) == (1,):
+            entries = jnp.atleast_2d(entries)
+        self._validate_entries(entries)
+        # Ensure that the operator has valid dimensions.
+        if entries.ndim == 3 and len(set(entries.shape)) == 1:
+            # Reshape (r x r x r) tensor.
+            entries = entries.reshape((entries.shape[0], -1))
+        if entries.ndim != 2:
+            raise ValueError(
+                "QuadraticOperator entries must be two-dimensional"
+            )
+        r, r2 = entries.shape
+        if r2 == r**2:
+            entries = self.compress_entries(entries)
+        elif r2 != self.operator_dimension(r):
+            raise ValueError("invalid QuadraticOperator entries dimensions")
+        
+        self._entries = entries
+
+    @staticmethod
+    def _str(statestr, inputstr=None):
+        return f"H[{statestr} ⊗ {statestr}]"
+    
+    @property
+    def entries(self):
+        r"""Internal representation :math:`\tilde{\H}` of the operator
+        matrix :math:`\Hhat`.
+        """
+        return OpInfOperator.entries.fget(self)
+
+    @property
+    def shape(self):
+        r"""Shape :math:`(r, r(r+1)/2)` of the internal representation
+        :math:`\tilde{\H}` of the operator matrix :math:`\Hhat`.
+        """
+        return OpInfOperator.shape.fget(self)
+
+    def apply(self, state, input_=None):
+        r"""Apply the operator to the given state / input:
+        :math:`\Ophat_{\ell}(\qhat,\u) = \Hhat[\qhat\otimes\qhat]`
+
+        Parameters
+        ----------
+        state : (r,) ndarray
+            State vector.
+        input_ : (m,) ndarray or None
+            Input vector (not used).
+
+        Returns
+        -------
+        out : (r,) ndarray
+            Application :math:`\Hhat[\qhat\otimes\qhat]`.
+        """
+        if self.entries.shape[0] == 1:
+            return self.entries[0, 0] * state**2  # r = 1
+        return self.entries @ self.ckron(state)
+    
+    def jacobian(self, state, input_=None):
+        jac_fn = jax.jacfwd(self.apply, argnums=0)
+        
+        # Check if the user passed a batch (2D array) or single state (1D array)
+        if state.ndim == 2:
+            # vmap maps the jacobian function across the columns (axis 1) 
+            # and outputs the batched Jacobians stacked on axis 2
+            batched_jac_fn = jax.vmap(jac_fn, in_axes=(1, None), out_axes=2)
+            return batched_jac_fn(state, input_)
+        else:
+            return jac_fn(state, input_)
+
+
+
+
+    @staticmethod
+    def datablock(states, inputs=None):
+        r"""Return the data matrix block corresponding to the operator,
+        the Khatri--Rao product of the state with itself:
+        :math:`\Qhat\odot\Qhat` where :math:`\Qhat` is ``states``.
+
+        Since :math:`\Ophat_\ell(\qhat,\u) = \Ohat_{\ell}\d_{\ell}(\qhat,\u)`
+        with :math:`\Ohat_{\ell} = \Hhat` and
+        :math:`\d_{\ell}(\qhat,\u) = \qhat\otimes\qhat`,
+        the data block should be
+
+        .. math::
+           \D\trp
+           = \left[\begin{array}{ccc}
+           \d_{\ell}(\qhat_0,\u_0)
+           & \cdots &
+           \d_{\ell}(\qhat_{k-1},\u_{k-1})
+           \end{array}\right]
+           = \left[\begin{array}{ccc}
+           \qhat_0\otimes\qhat_0 & \cdots & \qhat_{k-1}\otimes\qhat_{k-1}
+           \end{array}\right]
+           \in\RR^{r^2 \times k}.
+
+        Internally, a compressed Kronecker product :math:`\hat{\otimes}` with
+        :math:`r(r+1)/2 < r^{2}` degrees of freedom is used for efficiency,
+        hence the data block is actually
+
+        .. math::
+           \D\trp
+           = \left[\begin{array}{ccc}
+           \qhat_0\,\hat{\otimes}\,\qhat_0
+           & \cdots &
+           \qhat_{k-1}\,\hat{\otimes}\,\qhat_{k-1}
+           \end{array}\right]
+           \in\RR^{r(r+1)/2 \times k}.
+
+        Parameters
+        ----------
+        states : (r, k) or (k,) ndarray
+            State vectors. Each column is a single state vector.
+            If one dimensional, it is assumed that :math:`r = 1`.
+        inputs : (m, k) or (k,) ndarray or None
+            Input vectors (not used).
+
+        Returns
+        -------
+        product : (r(r+1)/2, k) ndarray
+            Compressed Khatri--Rao product of ``states`` with itself.
+        """
+        return QuadraticOperator.ckron(jnp.atleast_2d(states))
+
+    @staticmethod
+    def operator_dimension(r, m=None):
+        r"""Column dimension :math:`r(r+1)/2` of the internal representation
+        :math:`\tilde{\H}` of the operator matrix :math:`\Hhat`.
+
+        Parameters
+        ----------
+        r : int
+            State dimension.
+        m : int or None
+            Input dimension.
+        """
+        return r * (r + 1) // 2
+
+    @staticmethod
+    def ckron(state):
+        def _single_ckron(q):
+            full_outer = jnp.outer(q, q)
+            row_idx, col_idx = jnp.tril_indices(q.shape[0])
+            return full_outer[row_idx, col_idx]
+
+        if state.ndim == 2:
+            return jax.vmap(_single_ckron, in_axes=1, out_axes=1)(state)
+        else:
+            return _single_ckron(state)
+    
+    @staticmethod
+    def ckron_indices(r):
+        """Construct a mask for efficiently computing the compressed Kronecker product."""
+        row_idx, col_idx = jnp.tril_indices(r)
+        return jnp.column_stack((row_idx, col_idx))
+
+    @staticmethod
+    def compress_entries(H):
+        if jnp.ndim(H) == 1:
+            H = jnp.atleast_2d(H)
+        a, r2 = H.shape
+        r = int(round(r2 ** 0.5, 0))
+        if r**2 != r2:
+            raise ValueError(f"invalid shape (a, r2) = {H.shape} with r2 not a perfect square")
+
+        H_tensor = H.reshape((a, r, r))
+
+        row_idx, col_idx = jnp.tril_indices(r)
+
+        Hc_lower = H_tensor[:, row_idx, col_idx]
+        Hc_upper = H_tensor[:, col_idx, row_idx]
+
+        Hc = Hc_lower + Hc_upper
+
+        diag_mask = (row_idx == col_idx)
+        Hc = jnp.where(diag_mask, Hc / 2.0, Hc)
+
+        return Hc
+
+    @staticmethod
+    def expand_entries(Hc):
+        if jnp.ndim(Hc) == 1:
+            Hc = jnp.atleast_2d(Hc)
+        a, b = Hc.shape
+        r = int(round(jnp.sqrt(1 + 8 * b) / 2 - 0.5, 0))
+        if r * (r + 1) // 2 != b:
+            raise ValueError(f"invalid shape (a, r2) = {Hc.shape} with r2 != r(r+1)/2 for any integer r")
+
+        row_idx, col_idx = jnp.tril_indices(r)
+
+        diag_mask = (row_idx == col_idx)
+        Hc_fill = jnp.where(diag_mask, Hc, Hc / 2.0)
+        H_tensor = jnp.zeros((a, r, r))
+        H_tensor = H_tensor.at[:, row_idx, col_idx].set(Hc_fill)
+        H_tensor = H_tensor.at[:, col_idx, row_idx].set(Hc_fill)
+
+        return H_tensor.reshape((a, r**2))
+
+
+
