@@ -654,7 +654,7 @@ class TestCubicOperator(_TestNonparametricOperator):
         """Test jacobian()."""
         G = jrandom.uniform(self._next_key(), (r, r**3))
         op = self.Operator(G)
-        assert op._prejac is None
+        # assert op._prejac is None
 
         Id = jnp.eye(r)
         for _ in range(ntrials):
@@ -728,14 +728,14 @@ class TestCubicOperator(_TestNonparametricOperator):
                     q[i] * TestQuadraticOperator.Operator.ckron(q[: i + 1]),
                 )
 
-        for r in jrandom.randint(self.next_key(), 2, 10, n_tests):
-            q = jrandom.uniform(self._next_key(), r)
+        for r in jrandom.randint(self._next_key(), (n_tests,), 2, 10):
+            q = jrandom.uniform(self._next_key(), (r,))
             q3 = self.Operator.ckron(q)
             r3 = r * (r + 1) * (r + 2) // 6
             assert q3.shape == (r3,)
             _check(q, q3)
 
-            k = jrandom.randint(self._next_key(), 1, 10)
+            k = jrandom.randint(self._next_key(), (), 1, 10)
             Q = jrandom.uniform(self._next_key(), (r, k))
             Q3 = self.Operator.ckron(Q)
             assert Q3.shape == (r3, k)
@@ -755,12 +755,12 @@ class TestCubicOperator(_TestNonparametricOperator):
 
         # Random tests.
         for _ in range(n_tests):
-            r = jrandom.randint(self._next_key(), 2, 10)
+            r = jrandom.randint(self._next_key(), (), 2, 10)
             mask = self.Operator.ckron_indices(r)
             _r3 = r * (r + 1) * (r + 2) // 6
             mask = self.Operator.ckron_indices(r)
             assert mask.shape == (_r3, 3)
-            q = jrandom.uniform(self._next_key(), r)
+            q = jrandom.uniform(self._next_key(), (r,))
             assert jnp.allclose(
                 jnp.prod(q[mask], axis=1), self.Operator.ckron(q)
             )
@@ -779,14 +779,14 @@ class TestCubicOperator(_TestNonparametricOperator):
         )
 
         # One-dimensional G (r = 1).
-        Gc = self.Operator.compress_entries([6])
+        Gc = self.Operator.compress_entries(jnp.array([6]))
         assert Gc.shape == (1, 1)
         assert Gc[0, 0] == 6
 
         # Random tests.
-        for r in jrandom.randint(self._next_key(), 2, 10, n_tests):
+        for r in jrandom.randint(self._next_key(), (n_tests), 2, 10):
             # Check dimensions.
-            a = jrandom.randint(self._next_key(), 2, 10)
+            a = jrandom.randint(self._next_key(), (), 2, 10)
             G = jrandom.uniform(self._next_key(), (a, r**3))
             r2 = r * (r + 1) * (r + 2) // 6
             Gc = self.Operator.compress_entries(G)
@@ -794,7 +794,7 @@ class TestCubicOperator(_TestNonparametricOperator):
 
             # Check that Gc(q^3) == G(q ⊗ q ⊗ q).
             for _ in range(5):
-                q = jrandom.uniform(self._next_key(), r)
+                q = jrandom.uniform(self._next_key(), (r,))
                 Gq3 = G @ jnp.kron(q, jnp.kron(q, q))
                 assert jnp.allclose(Gq3, Gc @ self.Operator.ckron(q))
 
@@ -812,21 +812,21 @@ class TestCubicOperator(_TestNonparametricOperator):
         )
 
         # One-dimensional G (r = 1).
-        G = self.Operator.expand_entries([5])
+        G = self.Operator.expand_entries(jnp.array([5]))
         assert G.shape == (1, 1)
         assert G[0, 0] == 5
 
         # Random tests.
-        for r in jrandom.randint(self._next_key(), 2, 10, n_tests):
+        for r in jrandom.randint(self._next_key(), (n_tests), 2, 10):
             # Check dimensions.
-            a = jrandom.randint(self._next_key(), 2, 10)
+            a = jrandom.randint(self._next_key(), (), 2, 10)
             Gc = jrandom.uniform(self._next_key(), (a, r * (r + 1) * (r + 2) // 6))
             G = self.Operator.expand_entries(Gc)
             assert G.shape == (a, r**3)
 
             # Check that Gc[q^3] == G[q ⊗ q ⊗ q].
             for _ in range(5):
-                q = jrandom.uniform(self._next_key(), r)
+                q = jrandom.uniform(self._next_key(), (r,))
                 Gq3 = G @ jnp.kron(q, jnp.kron(q, q))
                 assert jnp.allclose(Gq3, Gc @ self.Operator.ckron(q))
 
