@@ -1,5 +1,6 @@
 import abc
 import pytest
+import jax
 import jax.numpy as jnp
 import scipy.sparse as sparse
 import jax.random as jrandom
@@ -552,6 +553,286 @@ class TestQuadraticOperator(_TestNonparametricOperator):
             Hc2 = self.Operator.compress_entries(H)
             assert jnp.allclose(Hc2, Hc)
 
+class TestCubicOperator(_TestNonparametricOperator):
+    """Test operators._nonparametric.CubicOperator."""
+
+    Operator = _module.CubicOperator
+    has_inputs = False
+
+    def test_set_entries(self, r=4):
+        """Test set_entries()."""
+
+        # Too many dimensions.
+        Gbad = jnp.arange(4).reshape((1, 2, 1, 2))
+        with pytest.raises(ValueError) as ex:
+            op = self.Operator(Gbad)
+        assert ex.value.args[0] == (
+            "CubicOperator entries must be two-dimensional"
+        )
+
+        # Two-dimensional but invalid shape.
+        Gbad = jrandom.uniform(self._next_key(), (3, 8))
+        with pytest.raises(ValueError) as ex:
+            op = self.Operator(Gbad)
+        assert ex.value.args[0] == "invalid CubicOperator entries dimensions"
+
+        # Special case: r = 1
+        G = jrandom.uniform(self._next_key(), (1, 1))
+        op = self.Operator(G)
+        assert op.shape == (1, 1)
+        assert jnp.allclose(op.entries, G)
+
+        # Full operator, compressed internally.
+        G = jrandom.uniform(self._next_key(), (r, r**3))
+        G_ = self.Operator.compress_entries(G)
+        op = self.Operator(G)
+        r3_ = r * (r + 1) * (r + 2) // 6
+        assert op.shape == (r, r3_)
+        assert jnp.allclose(op.entries, G_)
+
+        # Three-dimensional tensor.
+        op = self.Operator(G.reshape((r, r, r, r)))
+        assert op.shape == (r, r3_)
+        assert jnp.allclose(op.entries, G_)
+
+        # Compressed operator.
+        G = jrandom.uniform(self._next_key(), (r, r3_))
+        op = self.Operator(G)
+        assert op.entries is G
+
+        # Test _clear().
+        # op._clear()
+        # assert op.entries is None
+        # assert op._mask is None
+        # assert op._prejac is None
+
+
+    def test_apply(self, k=20, ntrials=10):
+        """Test apply()/__call__()."""
+        def khatri_rao(A, B):
+            compute_cols = jax.vmap(lambda a, b: jnp.outer(b, a).ravel(), in_axes=1, out_axes=1)
+            return compute_cols(A, B)
+
+        def _test_single(r):
+            G = jrandom.uniform(self._next_key(), (r, r**3))
+            op = self.Operator(G)
+            for _ in range(ntrials):
+                # Evaluation for a single vector.
+                q = jrandom.uniform(self._next_key(), r)
+                evaltrue = G @ jnp.kron(jnp.kron(q, q), q)
+                evalgot = op.apply(q)
+                assert jnp.allclose(evalgot, evaltrue)
+                # Vectorized evaluation.
+                Q = jrandom.uniform(self._next_key(), (r, k))
+                evaltrue = G @ khatri_rao(Q, khatri_rao(Q, Q))
+                evalgot = op.apply(Q)
+                assert evalgot.shape == (r, k)
+                assert jnp.allclose(evalgot, evaltrue)
+
+        _test_single(5)
+        _test_single(3)
+        _test_single(1)
+
+        # Special case: r = 1 and q is a scalar.
+        G = jrandom.uniform(self._next_key(), )
+        op = self.Operator(G)
+        for _ in range(ntrials):
+            # Evaluation for a single vector.
+            q = jrandom.uniform(self._next_key(), )
+            evaltrue = G * q**3
+            evalgot = op.apply(q)
+            assert jnp.isscalar(evalgot)
+            assert jnp.allclose(evalgot, evaltrue)
+            # Vectorized evaluation.
+            Q = jrandom.uniform(self._next_key(), k)
+            evaltrue = G * Q**3
+            evalgot = op.apply(Q)
+            assert evalgot.shape == (k,)
+            assert jnp.allclose(evalgot, evaltrue)
+
+    def test_jacobian(self, r=5, ntrials=10):
+        """Test jacobian()."""
+        G = jrandom.uniform(self._next_key(), (r, r**3))
+        op = self.Operator(G)
+        assert op._prejac is None
+
+        Id = jnp.eye(r)
+        for _ in range(ntrials):
+            q = jrandom.uniform(self._next_key(), r)
+            qId = jnp.kron(q, Id)
+            Idq = jnp.kron(Id, q)
+            qqId = jnp.kron(q, qId)
+            qIdq = jnp.kron(qId, q)
+            Idqq = jnp.kron(Idq, q)
+            jac_true = G @ (Idqq + qIdq + qqId).T
+            jac = op.jacobian(q)
+            assert jac.shape == (r, r)
+            assert jnp.allclose(jac, jac_true)
+
+        # Special case: r = 1
+        G = jrandom.uniform(self._next_key(), )
+        op = self.Operator(G)
+        for _ in range(ntrials):
+            q = jrandom.uniform(self._next_key(), )
+            jac_true = 3 * G * q**2
+            jac = op.jacobian(q)
+            assert jac.shape == (1, 1)
+            assert jnp.isclose(jac[0, 0], jac_true)
+
+    def test_datablock(self, k=20, r=10):
+        """Test datablock()."""
+        op = self.Operator()
+        state_ = jrandom.uniform(self._next_key(), (r, k))
+        r3_ = r * (r + 1) * (r + 2) // 6
+
+        # More thorough tests elsewhere for ckron().
+        block = op.datablock(state_)
+        assert block.shape == (r3_, k)
+        op.entries = jrandom.uniform(self._next_key(), (r, r3_))
+        mult = op.entries @ block
+        evald = op.apply(state_)
+        assert mult.shape == evald.shape
+        assert jnp.allclose(mult, evald)
+
+        # Special case: r = 1.
+        state_ = state_[0]
+        block = op.datablock(state_)
+        assert block.shape == (1, k)
+        op.entries = jrandom.uniform(self._next_key(), )
+        mult = op.entries[0, 0] * block[0]
+        evald = op.apply(state_)
+        assert mult.shape == evald.shape
+        assert jnp.allclose(mult, evald)
+
+    def test_operator_dimension(self):
+        """Test operator_dimension()."""
+        assert self.Operator.operator_dimension(1) == 1
+        assert self.Operator.operator_dimension(3) == 10
+        assert self.Operator.operator_dimension(5, 2) == 35
+
+    def test_ckron(self, n_tests=20):
+        """Test ckron()."""
+
+        def _check(q, q3):
+            for i in range(len(q)):
+                assert jnp.allclose(
+                    q3[
+                        i
+                        * (i + 1)
+                        * (i + 2)
+                        // 6 : (i + 1)
+                        * (i + 2)
+                        * (i + 3)
+                        // 6
+                    ],
+                    q[i] * TestQuadraticOperator.Operator.ckron(q[: i + 1]),
+                )
+
+        for r in jrandom.randint(self.next_key(), 2, 10, n_tests):
+            q = jrandom.uniform(self._next_key(), r)
+            q3 = self.Operator.ckron(q)
+            r3 = r * (r + 1) * (r + 2) // 6
+            assert q3.shape == (r3,)
+            _check(q, q3)
+
+            k = jrandom.randint(self._next_key(), 1, 10)
+            Q = jrandom.uniform(self._next_key(), (r, k))
+            Q3 = self.Operator.ckron(Q)
+            assert Q3.shape == (r3, k)
+            _check(Q, Q3)
+
+    def test_ckron_indices(self, n_tests=20):
+        """Test ckron_indices()."""
+        # Manufactured test.
+        mask = self.Operator.ckron_indices(2)
+        assert jnp.all(
+            mask
+            == jnp.array(
+                [[0, 0, 0], [1, 0, 0], [1, 1, 0], [1, 1, 1]],
+                dtype=int,
+            )
+        )
+
+        # Random tests.
+        for _ in range(n_tests):
+            r = jrandom.randint(self._next_key(), 2, 10)
+            mask = self.Operator.ckron_indices(r)
+            _r3 = r * (r + 1) * (r + 2) // 6
+            mask = self.Operator.ckron_indices(r)
+            assert mask.shape == (_r3, 3)
+            q = jrandom.uniform(self._next_key(), r)
+            assert jnp.allclose(
+                jnp.prod(q[mask], axis=1), self.Operator.ckron(q)
+            )
+
+    def test_compress_entries(self, n_tests=20):
+        """Test compress_entries()."""
+        # Try with bad second dimension.
+        r = 5
+        r3bad = r**3 + 1
+        G = jnp.empty((r, r3bad))
+        with pytest.raises(ValueError) as ex:
+            self.Operator.compress_entries(G)
+        assert ex.value.args[0] == (
+            f"invalid shape (a, r3) = {(r, r3bad)} "
+            "with r3 not a perfect cube"
+        )
+
+        # One-dimensional G (r = 1).
+        Gc = self.Operator.compress_entries([6])
+        assert Gc.shape == (1, 1)
+        assert Gc[0, 0] == 6
+
+        # Random tests.
+        for r in jrandom.randint(self._next_key(), 2, 10, n_tests):
+            # Check dimensions.
+            a = jrandom.randint(self._next_key(), 2, 10)
+            G = jrandom.uniform(self._next_key(), (a, r**3))
+            r2 = r * (r + 1) * (r + 2) // 6
+            Gc = self.Operator.compress_entries(G)
+            assert Gc.shape == (a, r2)
+
+            # Check that Gc(q^3) == G(q ⊗ q ⊗ q).
+            for _ in range(5):
+                q = jrandom.uniform(self._next_key(), r)
+                Gq3 = G @ jnp.kron(q, jnp.kron(q, q))
+                assert jnp.allclose(Gq3, Gc @ self.Operator.ckron(q))
+
+    def test_expand_entries(self, n_tests=20):
+        """Test expand_entries()."""
+        # Try with bad second dimension.
+        r = 5
+        r3bad = (r * (r + 1) * (r + 2) // 6) + 1
+        Gc = jnp.empty((r, r3bad))
+        with pytest.raises(ValueError) as ex:
+            self.Operator.expand_entries(Gc)
+        assert ex.value.args[0] == (
+            f"invalid shape (a, r3) = {(r, r3bad)} "
+            "with r3 != r(r+1)(r+2)/6 for any integer r"
+        )
+
+        # One-dimensional G (r = 1).
+        G = self.Operator.expand_entries([5])
+        assert G.shape == (1, 1)
+        assert G[0, 0] == 5
+
+        # Random tests.
+        for r in jrandom.randint(self._next_key(), 2, 10, n_tests):
+            # Check dimensions.
+            a = jrandom.randint(self._next_key(), 2, 10)
+            Gc = jrandom.uniform(self._next_key(), (a, r * (r + 1) * (r + 2) // 6))
+            G = self.Operator.expand_entries(Gc)
+            assert G.shape == (a, r**3)
+
+            # Check that Gc[q^3] == G[q ⊗ q ⊗ q].
+            for _ in range(5):
+                q = jrandom.uniform(self._next_key(), r)
+                Gq3 = G @ jnp.kron(q, jnp.kron(q, q))
+                assert jnp.allclose(Gq3, Gc @ self.Operator.ckron(q))
+
+            # Check that expand_entries() and compress_entries() are inverses.
+            Gc2 = self.Operator.compress_entries(G)
+            assert jnp.allclose(Gc2, Gc)
 
 
 
