@@ -1,3 +1,5 @@
+import math
+
 import jax
 import jax.numpy as jnp
 import jax.scipy.linalg as la
@@ -262,6 +264,9 @@ class LinearOperator(OpInfOperator):
         return r
     
 class QuadraticOperator(OpInfOperator):
+    _mask: jax.Array
+    _prejac: jax.Array
+
     def __init__(self, entries):
         if jnp.isscalar(entries) or jnp.shape(entries) == (1,):
             entries = jnp.atleast_2d(entries)
@@ -281,6 +286,17 @@ class QuadraticOperator(OpInfOperator):
             raise ValueError("invalid QuadraticOperator entries dimensions")
         
         self._entries = entries
+        self._mask = self.ckron_indices(r)
+        self._prejac = self._precompute_jacobian_jit()
+
+
+    def _precompute_jacobian_jit(self):
+        """Compute (just in time) the pre-Jacobian tensor Jt such that
+        Jt @ q = jacobian(q).
+        """
+        r = self.entries.shape[0]
+        Ht = self.expand_entries(self.entries).reshape((r, r, r))
+        return Ht + Ht.transpose(0, 2, 1)
 
     @staticmethod
     def _str(statestr, inputstr=None):
@@ -300,6 +316,7 @@ class QuadraticOperator(OpInfOperator):
         """
         return OpInfOperator.shape.fget(self)
 
+    @jax.jit
     def apply(self, state, input_=None):
         r"""Apply the operator to the given state / input:
         :math:`\Ophat_{\ell}(\qhat,\u) = \Hhat[\qhat\otimes\qhat]`
@@ -318,19 +335,30 @@ class QuadraticOperator(OpInfOperator):
         """
         if self.entries.shape[0] == 1:
             return self.entries[0, 0] * state**2  # r = 1
-        return self.entries @ self.ckron(state)
-    
-    def jacobian(self, state, input_=None):
-        jac_fn = jax.jacfwd(self.apply, argnums=0)
-        
-        # Check if the user passed a batch (2D array) or single state (1D array)
-        if state.ndim == 2:
-            # vmap maps the jacobian function across the columns (axis 1) 
-            # and outputs the batched Jacobians stacked on axis 2
-            batched_jac_fn = jax.vmap(jac_fn, in_axes=(1, None), out_axes=2)
-            return batched_jac_fn(state, input_)
-        else:
-            return jac_fn(state, input_)
+        return self.entries @ jnp.prod(state[self._mask], axis=1)
+
+
+    @jax.jit
+    def jacobian(self, state, input_=None):  
+        r"""Construct the state Jacobian of the operator:
+        :math:`\ddqhat\Ophat_{\ell}(\qhat,\u)
+        = \Hhat[(\I_r\otimes\qhat) + (\qhat\otimes\I_r)]`.
+
+        Parameters
+        ----------
+        state : (r,) ndarray or None
+            State vector.
+        input_ : (m,) ndarray or None
+            Input vector (not used).
+
+        Returns
+        -------
+        jac : (r, r) ndarray
+            State Jacobian
+            :math:`\Hhat[(\I_r\otimes\qhat) + (\qhat\otimes\I_r)]`.
+        """      
+        return self._prejac @ jnp.atleast_1d(state)
+
 
 
 
@@ -402,15 +430,8 @@ class QuadraticOperator(OpInfOperator):
 
     @staticmethod
     def ckron(state):
-        def _single_ckron(q):
-            full_outer = jnp.outer(q, q)
-            row_idx, col_idx = jnp.tril_indices(q.shape[0])
-            return full_outer[row_idx, col_idx]
-
-        if state.ndim == 2:
-            return jax.vmap(_single_ckron, in_axes=1, out_axes=1)(state)
-        else:
-            return _single_ckron(state)
+        row_idx, col_idx = jnp.tril_indices(state.shape[0])
+        return state[row_idx, ...] * state[col_idx, ...]
     
     @staticmethod
     def ckron_indices(r):
@@ -419,34 +440,35 @@ class QuadraticOperator(OpInfOperator):
         return jnp.column_stack((row_idx, col_idx))
 
     @staticmethod
+    @jax.jit
     def compress_entries(H):
         if jnp.ndim(H) == 1:
             H = jnp.atleast_2d(H)
         a, r2 = H.shape
-        r = int(round(r2 ** 0.5, 0))
+        r = math.isqrt(r2)
         if r**2 != r2:
             raise ValueError(f"invalid shape (a, r2) = {H.shape} with r2 not a perfect square")
 
-        H_tensor = H.reshape((a, r, r))
+        Ht = H.reshape((a, r, r))
 
         row_idx, col_idx = jnp.tril_indices(r)
 
-        Hc_lower = H_tensor[:, row_idx, col_idx]
-        Hc_upper = H_tensor[:, col_idx, row_idx]
-
-        Hc = Hc_lower + Hc_upper
-
         diag_mask = (row_idx == col_idx)
-        Hc = jnp.where(diag_mask, Hc / 2.0, Hc)
+        Hc = jnp.where(
+            diag_mask, 
+            Ht[:, row_idx, col_idx], 
+            Ht[:, row_idx, col_idx] + Ht[:, col_idx, row_idx]
+        )
 
         return Hc
 
     @staticmethod
+    @jax.jit
     def expand_entries(Hc):
         if jnp.ndim(Hc) == 1:
             Hc = jnp.atleast_2d(Hc)
         a, b = Hc.shape
-        r = int(round(jnp.sqrt(1 + 8 * b) / 2 - 0.5, 0))
+        r = (math.isqrt(1 + 8 * b) - 1) // 2
         if r * (r + 1) // 2 != b:
             raise ValueError(f"invalid shape (a, r2) = {Hc.shape} with r2 != r(r+1)/2 for any integer r")
 
@@ -454,11 +476,11 @@ class QuadraticOperator(OpInfOperator):
 
         diag_mask = (row_idx == col_idx)
         Hc_fill = jnp.where(diag_mask, Hc, Hc / 2.0)
-        H_tensor = jnp.zeros((a, r, r))
-        H_tensor = H_tensor.at[:, row_idx, col_idx].set(Hc_fill)
-        H_tensor = H_tensor.at[:, col_idx, row_idx].set(Hc_fill)
+        Ht = jnp.zeros((a, r, r))
+        Ht = Ht.at[:, row_idx, col_idx].set(Hc_fill)
+        Ht = Ht.at[:, col_idx, row_idx].set(Hc_fill)
 
-        return H_tensor.reshape((a, r**2))
+        return Ht.reshape((a, r**2))
 
 
 
