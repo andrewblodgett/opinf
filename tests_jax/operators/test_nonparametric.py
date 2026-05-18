@@ -9,6 +9,7 @@ import scipy.sparse as sparse
 
 import opinf
 import opinf_jax.operators._nonparametric as _module
+import opinf_jax.utils as utils
 
 try:
     from .test_base import _TestOpInfOperator
@@ -55,7 +56,6 @@ class TestConstantOperator(_TestNonparametricOperator):
         # Too many dimensions.
         cbad = jnp.arange(12).reshape((4, 3))
         with pytest.raises(ValueError) as ex:
-            # op.set_entries(cbad)
             op = self.Operator(entries=cbad)
         assert ex.value.args[0] == ("ConstantOperator entries must be one-dimensional")
 
@@ -66,12 +66,10 @@ class TestConstantOperator(_TestNonparametricOperator):
 
         # Case 2: two-dimensional array that can be flattened.
         op = self.Operator(entries=c.reshape((-1, 1)))
-        # op.set_entries(c.reshape((-1, 1)))
         assert op.shape == (12,)
         assert op.state_dimension == 12
         assert jnp.all(op.entries == c)
 
-        # op.set_entries(c.reshape((1, -1)))
         op = self.Operator(entries=c.reshape((1, -1)))
         assert op.shape == (12,)
         assert op.state_dimension == 12
@@ -79,7 +77,6 @@ class TestConstantOperator(_TestNonparametricOperator):
 
         # Case 3: r = 1 and c is a scalar.
         c = jrandom.uniform(self._next_key())
-        # op.set_entries(c)
         op = self.Operator(entries=c)
         assert op.shape == (1,)
         assert op.state_dimension == 1
@@ -111,7 +108,6 @@ class TestConstantOperator(_TestNonparametricOperator):
 
         # Special case: r = 1, scalar q.
         c = jrandom.uniform(self._next_key(), shape=())
-        # op.set_entries(c)
         op = self.Operator(entries=c)
 
         # Evaluation for a single vector.
@@ -602,12 +598,6 @@ class TestCubicOperator(_TestNonparametricOperator):
     def test_apply(self, k=20, ntrials=10):
         """Test apply()/__call__()."""
 
-        def khatri_rao(A, B):
-            compute_cols = jax.vmap(
-                lambda a, b: jnp.outer(b, a).ravel(), in_axes=1, out_axes=1
-            )
-            return compute_cols(A, B)
-
         def _test_single(r):
             G = jrandom.uniform(self._next_key(), (r, r**3))
             op = self.Operator(G)
@@ -619,7 +609,7 @@ class TestCubicOperator(_TestNonparametricOperator):
                 assert jnp.allclose(evalgot, evaltrue)
                 # Vectorized evaluation.
                 Q = jrandom.uniform(self._next_key(), (r, k))
-                evaltrue = G @ khatri_rao(Q, khatri_rao(Q, Q))
+                evaltrue = G @ utils.khatri_rao(Q, utils.khatri_rao(Q, Q))
                 evalgot = op.apply(Q)
                 assert evalgot.shape == (r, k)
                 assert jnp.allclose(evalgot, evaltrue)
@@ -883,12 +873,6 @@ class TestQuarticOperator(_TestNonparametricOperator):
     def test_apply(self, k=20, ntrials=10):
         """Test apply()/__call__()."""
 
-        def khatri_rao(A, B):
-            compute_cols = jax.vmap(
-                lambda a, b: jnp.outer(b, a).ravel(), in_axes=1, out_axes=1
-            )
-            return compute_cols(A, B)
-
         def _test_single(r):
             G = jrandom.uniform(self._next_key(), (r, r**4))
             op = self.Operator(G)
@@ -900,7 +884,9 @@ class TestQuarticOperator(_TestNonparametricOperator):
                 assert jnp.allclose(evalgot, evaltrue)
                 # Vectorized evaluation.
                 Q = jrandom.uniform(self._next_key(), (r, k))
-                evaltrue = G @ khatri_rao(Q, khatri_rao(Q, khatri_rao(Q, Q)))
+                evaltrue = G @ utils.khatri_rao(
+                    Q, utils.khatri_rao(Q, utils.khatri_rao(Q, Q))
+                )
                 evalgot = op.apply(Q)
                 assert evalgot.shape == (r, k)
                 assert jnp.allclose(evalgot, evaltrue)
@@ -1298,3 +1284,233 @@ def test_extend_dimension(r_large, r_small, m, key):
         indices_trial=indices_test
     )
     assert (matrix_original == operator_condensed.entries).all()
+
+
+# Dependent on state and input ================================================
+class TestStateInputOperator(_TestNonparametricOperator):
+    """Test operators._nonparametric.StateInputOperator."""
+
+    Operator = _module.StateInputOperator
+    has_inputs = True
+
+    def test_set_entries(self):
+        """Test set_entries()."""
+
+        # Too many dimensions.
+        Nbad = jnp.arange(12).reshape((2, 2, 3))
+        with pytest.raises(ValueError) as ex:
+            op = self.Operator(Nbad)
+        assert ex.value.args[0] == (
+            "StateInputOperator entries must be two-dimensional"
+        )
+
+        # Two-dimensional but invalid shape.
+        Nbad = jrandom.uniform(self._next_key(), (3, 7))
+        with pytest.raises(ValueError) as ex:
+            op = self.Operator(Nbad)
+        assert ex.value.args[0] == ("invalid StateInputOperator entries dimensions")
+
+        # Correct dimensions.
+        r, m = 5, 3
+        N = jrandom.uniform(self._next_key(), (r, r * m))
+        op = self.Operator(N)
+        assert op.entries is N
+        assert op.input_dimension == m
+
+        # Special case: r = 1, m = 1 (scalar B).
+        n = jrandom.uniform(
+            self._next_key(),
+        )
+        op = self.Operator(n)
+        assert op.shape == (1, 1)
+        assert op[0, 0] == n
+        assert op.input_dimension == 1
+
+    def test_apply(self, k=20):
+        """Test apply()/__call__()."""
+
+        def _test_single(r, m):
+            N = jrandom.uniform(self._next_key(), (r, r * m))
+            op = self.Operator(N)
+            # Evaluation for a single vector.
+            q = jrandom.uniform(self._next_key(), (r,))
+            u = jrandom.uniform(self._next_key(), (m,))
+            evaltrue = N @ jnp.kron(u, q)
+            evalgot = op.apply(q, u)
+            assert evalgot.shape == (r,)
+            assert jnp.allclose(evalgot, evaltrue)
+            # Vectorized evaluation.
+            Q = jrandom.uniform(self._next_key(), (r, k))
+            U = jrandom.uniform(self._next_key(), (m, k))
+            evaltrue = N @ utils.khatri_rao(U, Q)
+            evalgot = op.apply(Q, U)
+            assert evalgot.shape == (r, k)
+            assert jnp.allclose(evalgot, evaltrue)
+
+        _test_single(10, 20)
+        _test_single(2, 6)
+        _test_single(3, 3)
+        _test_single(2, 1)
+        _test_single(1, 4)
+        _test_single(1, 1)
+
+        # Special case: N is 1x1 and q, u are scalars.
+        N = jrandom.uniform(
+            self._next_key(),
+        )
+        op = self.Operator(N)
+        # Evaluation for a single vector.
+        q = jrandom.uniform(
+            self._next_key(),
+        )
+        u = jrandom.uniform(
+            self._next_key(),
+        )
+        out = op.apply(q, u)
+        assert jnp.isscalar(out)
+        assert jnp.allclose(out, N * u * q)
+        # Vectorized evaluation.
+        Q = jrandom.uniform(self._next_key(), k)
+        U = jrandom.uniform(self._next_key(), k)
+        out = op.apply(Q, U)
+        assert out.shape == (k,)
+        assert jnp.allclose(out, N * U * Q)
+
+        # Special case: N is rxr, r>1, and u is a scalar.
+        r = 10
+        N = jrandom.uniform(self._next_key(), (r, r))
+        op = self.Operator(N)
+        # Evaluation for a single vector.
+        q = jrandom.uniform(self._next_key(), r)
+        u = jrandom.uniform(
+            self._next_key(),
+        )
+        out = op.apply(q, u)
+        assert out.shape == (r,)
+        assert jnp.allclose(out, (N @ q) * u)
+        # Vectorized evaluation.
+        Q = jrandom.uniform(self._next_key(), (r, k))
+        U = jrandom.uniform(self._next_key(), k)
+        out = op.apply(Q, U)
+        assert out.shape == (r, k)
+        assert jnp.allclose(out, jnp.column_stack([N @ q * u for q, u in zip(Q.T, U)]))
+
+    def test_jacobian(self, r=9, m=4, ntrials=10):
+        """Test jacobian()."""
+        Ns = [jrandom.uniform(self._next_key(), (r, r)) for _ in range(m)]
+        N = jnp.hstack(Ns)
+        op = self.Operator(N)
+
+        with pytest.raises(ValueError) as ex:
+            op.jacobian(
+                jrandom.uniform(self._next_key(), r),
+                jrandom.uniform(self._next_key(), m - 1),
+            )
+        assert ex.value.args[0] == "invalid input_ shape"
+
+        for _ in range(ntrials):
+            q = jrandom.uniform(self._next_key(), r)
+            u = jrandom.uniform(self._next_key(), m)
+            jac_true = sum([Ni * uu for Ni, uu in zip(Ns, u)])
+            jac = op.jacobian(q, u)
+            assert jac.shape == (r, r)
+            assert jnp.allclose(jac, jac_true)
+
+        # Special case: r = 1, m > 1, q is a scalar.
+        N = jrandom.uniform(self._next_key(), (1, m))
+        op = self.Operator(N)
+        for _ in range(ntrials):
+            q = jrandom.uniform(
+                self._next_key(),
+            )
+            u = jrandom.uniform(self._next_key(), m)
+            jac_true = N @ u
+            jac = op.jacobian(q, u)
+            assert jac.shape == (1, 1)
+            assert jnp.allclose(jac, jac_true)
+
+        # Special case: r > 1, m = 1, u is a scalar.
+        N = jrandom.uniform(self._next_key(), (r, r))
+        op = self.Operator(N)
+        for _ in range(ntrials):
+            q = jrandom.uniform(self._next_key(), r)
+            u = jrandom.uniform(
+                self._next_key(),
+            )
+            jac_true = N * u
+            jac = op.jacobian(q, u)
+            assert jac.shape == (r, r)
+            assert jnp.allclose(jac, jac_true)
+
+        # Special case: r = m = 1, q and u are scalars.
+        N = jrandom.uniform(
+            self._next_key(),
+        )
+        op = self.Operator(N)
+        for _ in range(ntrials):
+            q = jrandom.uniform(
+                self._next_key(),
+            )
+            u = jrandom.uniform(
+                self._next_key(),
+            )
+            jac_true = N * u
+            jac = op.jacobian(q, u)
+            assert jac.shape == (1, 1)
+            assert jnp.isclose(jac[0, 0], jac_true)
+
+    def test_datablock(self, m=3, k=20, r=10):
+        """Test datablock()."""
+        op = self.Operator(jrandom.uniform(self._next_key(), (r, k)))
+        state_ = jrandom.uniform(self._next_key(), (r, k))
+        input_ = jrandom.uniform(self._next_key(), (m, k))
+        rm = r * m
+
+        block = op.datablock(state_, input_)
+        assert block.shape == (rm, k)
+        op = self.Operator(jrandom.uniform(self._next_key(), (r, rm)))
+        mult = op.entries @ block
+        evald = op.apply(state_, input_)
+        assert mult.shape == evald.shape
+        assert jnp.allclose(mult, evald)
+
+        # Special case: r = 1, m > 1
+        state_ = state_[0]
+        block = op.datablock(state_, input_)
+        assert block.shape == (m, k)
+        op = self.Operator(jrandom.uniform(self._next_key(), (1, m)))
+        mult = op.entries @ block
+        evald = op.apply(state_, input_)
+        assert mult.shape == evald.shape
+        assert jnp.allclose(mult, evald)
+
+        # Special case: r > 1, m = 1
+        state_ = jrandom.uniform(self._next_key(), (r, k))
+        input_ = input_[0]
+        block = op.datablock(state_, input_)
+        assert block.shape == (r, k)
+        op = self.Operator(jrandom.uniform(self._next_key(), (r, r)))
+        mult = op.entries @ block
+        evald = op.apply(state_, input_)
+        assert mult.shape == evald.shape
+        assert jnp.allclose(mult, evald)
+
+        # Special case: r = m = 1.
+        state_ = state_[0]
+        block = op.datablock(state_, input_)
+        assert block.shape == (1, k)
+        op = self.Operator(
+            jrandom.uniform(
+                self._next_key(),
+            )
+        )
+        mult = op.entries[0, 0] * block[0]
+        evald = op.apply(state_, input_)
+        assert mult.shape == evald.shape
+        assert jnp.allclose(mult, evald)
+
+    def test_operator_dimension(self):
+        """Test operator_dimension()."""
+        assert self.Operator.operator_dimension(1, 2) == 2
+        assert self.Operator.operator_dimension(3, 6) == 18
+        assert self.Operator.operator_dimension(5, 2) == 10

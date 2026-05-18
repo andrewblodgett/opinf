@@ -1707,3 +1707,204 @@ class InputOperator(OpInfOperator, InputMixin):
         )
 
         return InputOperator(entries=new_entries)
+
+
+# Dependent on both state and input ===========================================
+class StateInputOperator(OpInfOperator, InputMixin):
+    r"""Linear state / input interaction operator
+    :math:`\Ophat_{\ell}(\qhat,\u) = \Nhat[\u\otimes\qhat]`
+    where :math:`\Nhat \in \RR^{r \times rm}`.
+
+    Parameters
+    ----------
+    entries : (r, rm) ndarray or None
+        Operator matrix :math:`\Nhat`.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> N = opinf.operators.StateInputOperator()
+    >>> entries = np.random.random((10, 3))
+    >>> N.set_entries(entries)
+    >>> N.shape
+    (10, 3)
+    >>> q = np.random.random(10)                # State vector.
+    >>> u = np.random.random(3)                 # Input vector.
+    >>> out = N.apply(q, u)                     # Apply the operator to (q,u).
+    >>> np.allclose(out, entries @ np.kron(u, q))
+    True
+    """
+
+    def __init__(self, entries):
+        if jnp.isscalar(entries) or jnp.shape(entries) == (1,):
+            entries = jnp.atleast_2d(entries)
+        self._validate_entries(entries)
+
+        # Ensure that the operator has valid dimensions.
+        if entries.ndim != 2:
+            raise ValueError("StateInputOperator entries must be two-dimensional")
+        r, rm = entries.shape
+        m = rm // r
+        if rm != r * m:
+            raise ValueError("invalid StateInputOperator entries dimensions")
+        self._entries = entries
+
+    @property
+    def input_dimension(self):
+        r"""Dimension :math:`m` of the input :math:`\u` that the operator
+        acts on.
+        """
+        return self.entries.shape[1] // self.entries.shape[0]
+
+    @staticmethod
+    def _str(statestr, inputstr):
+        return f"N[{inputstr} ⊗ {statestr}]"
+
+    @property
+    def entries(self):
+        r"""Operator matrix :math:`\Nhat`."""
+        return OpInfOperator.entries.fget(self)
+
+    @property
+    def shape(self):
+        r"""Shape :math:`(r, rm)` of the operator matrix :math:`\Nhat`."""
+        return OpInfOperator.shape.fget(self)
+
+    @utils.requires("entries")
+    def apply(self, state, input_):
+        r"""Apply the operator to the given state / input:
+        :math:`\Ophat_{\ell}(\qhat,\u) = \Nhat[\u\otimes\qhat]`.
+
+        Parameters
+        ----------
+        state : (r,) ndarray
+            State vector.
+        input_ : (m,) ndarray
+            Input vector.
+
+        Returns
+        -------
+        out : (r,) ndarray
+            The evaluation :math:`\Nhat[\u\otimes\qhat]`.
+        """
+        # Determine if arguments represent one snapshot or several.
+        multi = (sdim := jnp.ndim(state)) > 1
+        multi |= (idim := jnp.ndim(input_)) > 1
+        multi |= self.shape[0] == 1 and sdim == 1 and state.shape[0] > 1
+        multi |= self.shape[1] == 1 and idim == 1 and input_.shape[0] > 1
+        single = not multi
+
+        if self.shape[1] == 1:
+            return self.entries[0, 0] * input_ * state  # r = m = 1.
+        if single:
+            return self.entries @ jnp.kron(input_, state)  # k = 1, rm > 1.
+        Q_ = jnp.atleast_2d(state)
+        U = jnp.atleast_2d(input_)
+        return self.entries @ utils.khatri_rao(U, Q_)  # k > 1, rm > 1.
+
+    def jacobian(self, state, input_):
+        r"""Construct the state Jacobian of the operator:
+        :math:`\ddqhat\Ophat_{\ell}(\qhat,\u) = \sum_{i=1}^{m}u_{i}\Nhat_{i}`
+        where :math:`\Nhat=[~\Nhat_{1}~~\cdots~~\Nhat_{m}~]`
+        and each :math:`\Nhat_i\in\RR^{r\times r},~i=1,\ldots,m`.
+
+        Parameters
+        ----------
+        state : (r,) ndarray or None
+            State vector.
+        input_ : (m,) ndarray or None
+            Input vector (not used).
+
+        Returns
+        -------
+        jac : (r, r) ndarray
+            State Jacobian :math:`\sum_{i=1}^{m}u_{i}\Nhat_{i}`.
+        """
+        r, rm = self.entries.shape
+        m = rm // r
+        u = jnp.atleast_1d(input_)
+        if u.shape[0] != m:
+            raise ValueError("invalid input_ shape")
+        return jnp.sum(
+            jnp.array(
+                [um * Nm for um, Nm in zip(u, jnp.split(self.entries, m, axis=1))]
+            ),
+            axis=0,
+        )
+
+    @utils.requires("entries")
+    def galerkin(self, Vr, Wr=None):
+        r"""Return the Galerkin projection of the operator,
+        :math:`\Nhat = (\Wr\trp\Vr)^{-1}\Wr\trp\N[\I_{m}\otimes\Vr]`.
+
+        Parameters
+        ----------
+        Vr : (n, r) ndarray
+            Basis for the trial space.
+        Wr : (n, r) ndarray or None
+            Basis for the test space. If ``None``, defaults to ``Vr``.
+
+        Returns
+        -------
+        projected : :class:`opinf.operators.StateInputOperator`
+            Projected operator.
+        """
+
+        def _pg(N, V):
+            r, rm = N.shape
+            m = rm // r
+            return N @ jnp.kron(jnp.eye(m), V)
+
+        return self._galerkin(Vr, Wr, _pg)
+
+    @staticmethod
+    def datablock(states, inputs):
+        r"""Return the data matrix block corresponding to the operator,
+        the Khatri--Rao product :math:`\U\odot\Qhat` where
+        :math:`\Qhat` is ``states`` and :math:`\U` is ``inputs``.
+
+        Since :math:`\Ophat_\ell(\qhat,\u) = \Ohat_{\ell}\d_{\ell}(\qhat,\u)`
+        with :math:`\Ohat_{\ell} = \Nhat` and
+        :math:`\d_{\ell}(\qhat,\u) = \u\otimes\qhat`, the data block is
+
+        .. math::
+           \D\trp
+           = \left[\begin{array}{ccc}
+           \d_{\ell}(\qhat_0,\u_0)
+           & \cdots &
+           \d_{\ell}(\qhat_{k-1},\u_{k-1})
+           \end{array}\right]
+           = \left[\begin{array}{ccc}
+           \u_0 \otimes \qhat_0 & \cdots & \u_{k-1} \otimes \qhat_{k-1}
+           \end{array}\right]
+           \in \RR^{rm \times k}.
+
+        Parameters
+        ----------
+        states : (r, k) or (k,) ndarray
+            State vectors (not used).
+            If one dimensional, it is assumed that :math:`r = 1`.
+        inputs : (m, k) or (k,) ndarray or None
+            Input vectors. Each column is a single input vector.
+            If one dimensional, it is assumed that :math:`m = 1`.
+
+        Returns
+        -------
+        product_ : (m, k) ndarray or None
+            Compressed Khatri-Rao product of the ``input_`` and the ``states``.
+        """
+
+        return utils.khatri_rao(jnp.atleast_2d(inputs), jnp.atleast_2d(states))
+
+    @staticmethod
+    def operator_dimension(r, m):
+        r"""Column dimension :math:`rm` of the operator matrix :math:`\Nhat`.
+
+        Parameters
+        ----------
+        r : int
+            State dimension.
+        m : int or None
+            Input dimension.
+        """
+        return r * m
