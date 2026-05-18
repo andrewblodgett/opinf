@@ -1,16 +1,44 @@
 import abc
 import types
+
+import equinox as eqx
 import jax
 import jax.numpy as jnp
-import equinox as eqx
 
 from .. import errors, utils
+
+
+class InputMixin(abc.ABC):
+    r"""Mixin for operators whose ``apply()`` method acts on the input
+    :math:`\u`.
+
+    Operators that do not inherit from this Mixin do not have an
+    ``input_dimension`` attribute, which indicates :math:`m = 0`.
+    """
+
+    @property
+    @abc.abstractmethod
+    def input_dimension(self) -> int:
+        r"""Dimension :math:`m` of the input :math:`\u` that the operator
+        acts on.
+        """
+        raise NotImplementedError  # pragma: no cover
+
+
+def has_inputs(obj) -> bool:
+    r"""Return ``True`` if ``obj`` is an operator object whose ``apply()``
+    method acts on the ``input_`` argument, i.e.,
+    :math:`\Ophat_{\ell}(\qhat,\u)` depends on :math:`\u`.
+    """
+    return isinstance(obj, InputMixin)
+
 
 class OperatorTemplate(eqx.Module):
     @abc.abstractmethod
     def apply(self, state: jax.Array, input_=None) -> jax.Array:
         raise NotImplementedError
-    
+
+
 class OpInfOperator(OperatorTemplate):
     _entries: jax.Array = eqx.field(converter=jnp.asarray)
 
@@ -22,9 +50,7 @@ class OpInfOperator(OperatorTemplate):
     def _validate_entries(entries):
         """Ensure argument is a jax array and screen for NaN, Inf entries."""
         if not isinstance(entries, jax.Array):
-            raise TypeError(
-                "operator entries must be jax.Array"
-            )
+            raise TypeError("operator entries must be jax.Array")
         if jnp.any(jnp.isnan(entries)):
             raise ValueError("operator entries must not be NaN")
         elif jnp.any(jnp.isinf(entries)):
@@ -33,7 +59,7 @@ class OpInfOperator(OperatorTemplate):
     @property
     def entries(self) -> jax.Array:
         return self._entries
-    
+
     @property
     def shape(self) -> tuple:
         """Shape of the operator matrix."""
@@ -83,7 +109,7 @@ class OpInfOperator(OperatorTemplate):
     @utils.requires("entries")
     def jacobian(self, state, input_=None) -> jax.Array:  # pragma: no cover
         return 0
-    
+
     def _galerkin(self, Vr, Wr, func):
         if Wr is None:
             Wr = Vr
@@ -91,9 +117,7 @@ class OpInfOperator(OperatorTemplate):
         if self.entries.shape[0] != n:  # pragma: no cover
             raise errors.DimensionalityError("basis and operator not aligned")
         if Vr.shape[1] != r:  # pragma: no cover
-            raise errors.DimensionalityError(
-                "trial and test bases not aligned"
-            )
+            raise errors.DimensionalityError("trial and test bases not aligned")
 
         entries = Wr.T @ func(self.entries, Vr)
         if not jnp.allclose((WrTVr := Wr.T @ Vr), jnp.eye(r)):

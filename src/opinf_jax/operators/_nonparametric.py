@@ -7,7 +7,7 @@ import jax.scipy.linalg as la
 import scipy.special as special
 
 from .. import utils
-from ._base import OpInfOperator
+from ._base import InputMixin, OpInfOperator
 
 
 class ConstantOperator(OpInfOperator):
@@ -1411,3 +1411,299 @@ class QuarticOperator(OpInfOperator):
         raise ValueError(  # pragma: no cover
             f"Newton solve for r such that r(r+1)(r+2)(r+3)/24 = {b} failed"
         )
+
+
+# Dependent on input but not on state =========================================
+class InputOperator(OpInfOperator, InputMixin):
+    r"""Linear input operator :math:`\Ophat_{\ell}(\qhat,\u) = \Bhat\u`
+    where :math:`\Bhat \in \RR^{r \times m}`.
+
+    Parameters
+    ----------
+    entries : (r, m) ndarray or None
+        Operator matrix :math:`\Bhat`.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> B = opinf.operators.LinearOperator()
+    >>> entries = np.random.random((10, 3))     # Operator matrix.
+    >>> B.set_entries(entries)
+    >>> B.shape
+    (10, 3)
+    >>> u = np.random.random(3)                 # Input vector.
+    >>> out = B.apply(None, u)                  # Apply the operator to u.
+    >>> np.allclose(out, entries @ u)
+    True
+    """
+
+    def __init__(self, entries):
+        if jnp.isscalar(entries) or jnp.shape(entries) == (1,):
+            entries = jnp.atleast_2d(entries)
+        self._validate_entries(entries)
+
+        # Ensure that the operator is two-dimensional.
+        if entries.ndim == 1:
+            # Assumes r = entries.size, m = 1.
+            entries = entries.reshape((-1, 1))
+        if entries.ndim != 2:
+            raise ValueError("InputOperator entries must be two-dimensional")
+        self._entries = entries
+
+    def set_input_dimension(self, m):
+        self.my_input_dimension = m
+
+    @property
+    def input_dimension(self):
+        r"""Dimension :math:`m` of the input :math:`\u` that the operator
+        acts on.
+        """
+        return self.entries.shape[1]
+
+    @staticmethod
+    def _str(statestr, inputstr):
+        return f"B{inputstr}"
+
+    @property
+    def entries(self):
+        r"""Operator matrix :math:`\Bhat`."""
+        return OpInfOperator.entries.fget(self)
+
+    @property
+    def shape(self):
+        r"""Shape :math:`(r, m)` of the operator matrix :math:`\Bhat`."""
+        return OpInfOperator.shape.fget(self)
+
+    def set_entries(self, entries):
+        r"""Set the operator matrix :math:`\Bhat`.
+
+        Parameters
+        ----------
+        entries : (r, m) ndarray
+            Operator matrix :math:`\Bhat`.
+        """
+
+        OpInfOperator.set_entries(self, entries)
+
+    def apply(self, state, input_):
+        r"""Apply the operator to the given state / input:
+        :math:`\Ophat_{\ell}(\qhat,\u) = \Bhat\u`.
+
+        Parameters
+        ----------
+        state : (r,) ndarray
+            State vector (not used).
+        input_ : (m,) ndarray
+            Input vector.
+
+        Returns
+        -------
+        out : (r,) ndarray
+            Application :math:`\Bhat\u`.
+        """
+        if self.entries.shape[1] == 1 and (dim := jnp.ndim(input_)) != 2:
+            if self.entries.shape[0] == 1:
+                return self.entries[0, 0] * input_  # r = m = 1.
+            if dim == 1 and input_.size > 1:  # r, k > 1, m = 1.
+                return jnp.outer(self.entries[:, 0], input_)
+            return self.entries[:, 0] * input_  # r > 1, m = k = 1.
+        return self.entries @ input_  # m > 1.
+
+    def galerkin(self, Vr, Wr=None):
+        r"""Return the Galerkin projection of the operator,
+        :math:`\Bhat = (\Wr\trp\Vr)^{-1}\Wr\trp\B`.
+
+        Parameters
+        ----------
+        Vr : (n, r) ndarray
+            Basis for the trial space.
+        Wr : (n, r) ndarray or None
+            Basis for the test space. If ``None``, defaults to ``Vr``.
+
+        Returns
+        -------
+        projected : :class:`opinf.operators.InputOperator`
+            Projected operator.
+        """
+        return self._galerkin(Vr, Wr, lambda B, V: B)
+
+    @staticmethod
+    def datablock(states, inputs):
+        r"""Return the data matrix block corresponding to the operator,
+        the ``inputs``.
+
+        Since :math:`\Ophat_\ell(\qhat,\u) = \Ohat_{\ell}\d_{\ell}(\qhat,\u)`
+        with :math:`\Ohat_{\ell} = \Bhat` and
+        :math:`\d_{\ell}(\qhat,\u) = \u`, the data block is
+
+        .. math::
+           \D\trp
+           = \left[\begin{array}{ccc}
+           \d_{\ell}(\qhat_0,\u_0)
+           & \cdots &
+           \d_{\ell}(\qhat_{k-1},\u_{k-1})
+           \end{array}\right]
+           = \left[\begin{array}{ccc}
+           \u_0 & \cdots & \u_{k-1}
+           \end{array}\right]
+           \in \RR^{r \times k}.
+
+        Parameters
+        ----------
+        states : (r, k) or (k,) ndarray
+            State vectors (not used).
+        inputs : (m, k) or (k,) ndarray
+            Input vectors. Each column is a single input vector.
+            If one dimensional, it is assumed that :math:`m = 1`.
+
+        Returns
+        -------
+        inputs : (m, k) ndarray
+            Input vectors. Each column is a single input vector.
+        """
+        return jnp.atleast_2d(inputs)
+
+    @staticmethod
+    def operator_dimension(r, m):
+        r"""Column dimension :math:`m` of the operator matrix :math:`\Bhat`.
+
+        Parameters
+        ----------
+        r : int
+            State dimension.
+        m : int or None
+            Input dimension.
+        """
+        return m
+
+    def restrict_to_subspace(self, indices_trial, indices_test=None):
+        r"""
+        Creates a new operator of type `InputOperator` for the reduced
+        (test) dimension
+        ``len(indices_test)`` (Petrov-Galerkin setting). The new operator
+        is constructed by restricting testing
+        in :math:`span{\mathbf{v}_i: i \in indices_test}`.
+
+        If ``indices_test``
+        is not provided, defaults to the Galerkin setting
+        ``indices_test = indices_trial``.
+
+        Currently, the more general restriction onto combinations of
+        basis vectors (e.g., onto :math:`span{(v_1+v_2)/2}`) is not supported.
+
+        Parameters
+        ----------
+        indices_trial : list of integers
+            indices of the (trial) basis vectors onto which the operator
+            shall be restricted. Needs to be in increasing order and
+            not contain dubplicates.
+        indices_test : list of integers
+            indices of the (test) basis vectors onto which the operator
+            shall be restricted in the Petrov-Galerkin setting in
+            increasing order. Needs to be in increasing order and
+            not contain dubplicates.
+
+        Returns
+        -------
+        InputOperator
+            Operator for test
+            dimension ``len(indices_test)``, and polynomial order
+            ``self.polynomial_order``.
+        """
+        if indices_test is None:
+            indices_test = indices_trial
+
+        if max(indices_test) >= self.state_dimension:
+            raise RuntimeError(
+                f"""
+                               In InputOperator.restrict_to_subspace:
+                               Encountered restriction onto unknown test basis
+                               vector number {max(indices_test)}.
+                               Reduced dimension is {self.state_dimension}"""
+            )
+
+        new_entries = self.entries[indices_test, :]
+
+        return InputOperator(entries=new_entries)
+
+    def extend_to_dimension(
+        self, new_r, indices_trial=None, indices_test=None, new_r_test=None
+    ):
+        r"""
+        Creates a new operator of type `InputOperator` of the same
+        input dimension as this one but for the reduced (test) dimension
+        ``new_r_test`` (defaulted to
+        ``new_r_test = new_r`` if not provided). The new operator is
+        created by mapping the current test basis vectors :math:`\mathbf{w}_i`
+        onto the new test vectors :math:`\tilde{\mathbf{w}}_j`,
+        :math:`j=` ``indices_test[i]`` of the new basis, :math`i=1, ..., r`.
+        The remaining actions of the new operator (i.e., all actions that
+        involve :math:`\tilde{\mathbf{v}}_j` with
+        :math:`j\notin` ``indices_trial`` or :math:`\tilde{\mathbf{w}}_j`
+        with :math:`j\notin` ``indices_test``) are defaulted to 0.
+
+        If ``indices_trial`` is not provided, it is assumed that the
+        current basis is expanded and the current basis vectors are
+        to be mapped onto the first :math:`r` basis vectors of the
+        new basis, i.e., we default to ``indices_trial = [0, ..., r-1]``.
+
+        If ``indices_test``
+        is not provided, defaults to the Galerkin setting
+        ``indices_test = indices_trial``.
+
+        Currently, the more general restriction onto combinations of
+        basis vectors (e.g., onto :math:`span{(v_1+v_2)/2}`) is not supported.
+
+        Parameters
+        ----------
+        new_r : int
+            target reduced dimension (trial space). Needs to be at
+            least as large as ``self.state_dimension``
+        indices_trial : list of integers
+            indices of the (trial) basis vectors to which the previous
+            operator entries shall be mapped in the expanded basis.
+            Needs to be in increasing order and
+            not contain dubplicates.
+        indices_test : list of integers
+            indices of the (test) basis vectors onto which the
+            previous operator entries shall be mapped in the
+            expanded basis (Petrov-Galerkin setting only).
+            Needs to be in increasing order and
+            not contain dubplicates.
+        new_r_test : int
+            target reduced dimension (test space). Defaulted to
+            ``new_r`` if not provided.
+
+        Returns
+        -------
+        InputOperator
+            Operator for trial dimension ``new_r``, test
+            dimension ``new_r_test``, and polynomial order
+            ``self.polynomial_order``.
+        """
+        if indices_trial is None:
+            # default to extending the basis towards the right
+            indices_trial = [*range(self.state_dimension)]
+
+        if indices_test is None:
+            # default to Galerking case
+            indices_test = indices_trial
+
+        if new_r_test is None:
+            new_r_test = new_r
+
+        if new_r_test < self.state_dimension:
+            raise RuntimeError(
+                f"""In InputOperator.extend_to_dimension:
+                Dimension mismatch. Expected new dimension ({new_r_test})
+                to be larger than old dimension ({self.state_dimension})
+                """
+            )
+
+        new_entries = (
+            jnp.zeros((new_r_test, self.input_dimension))
+            .at[indices_test, :]
+            .set(self.entries)
+        )
+
+        return InputOperator(entries=new_entries)
