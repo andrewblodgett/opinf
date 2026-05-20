@@ -1,9 +1,7 @@
-import itertools
 import math
 
 import jax
 import jax.numpy as jnp
-import jax.scipy.linalg as la
 import scipy.special as special
 
 from .. import utils
@@ -449,13 +447,10 @@ class QuadraticOperator(OpInfOperator):
         row_idx, col_idx = jnp.tril_indices(r)
 
         diag_mask = row_idx == col_idx
-        Hc = jnp.where(
-            diag_mask,
-            Ht[:, row_idx, col_idx],
-            Ht[:, row_idx, col_idx] + Ht[:, col_idx, row_idx],
-        )
+        lower = Ht[:, row_idx, col_idx]
+        upper = Ht[:, col_idx, row_idx]
 
-        return Hc
+        return lower + jnp.where(diag_mask, 0.0, upper)
 
     @staticmethod
     @jax.jit
@@ -472,12 +467,16 @@ class QuadraticOperator(OpInfOperator):
         row_idx, col_idx = jnp.tril_indices(r)
 
         diag_mask = row_idx == col_idx
-        Hc_fill = jnp.where(diag_mask, Hc, Hc / 2.0)
-        Ht = jnp.zeros((a, r, r))
-        Ht = Ht.at[:, row_idx, col_idx].set(Hc_fill)
-        Ht = Ht.at[:, col_idx, row_idx].set(Hc_fill)
+        Hc_fill = jnp.where(diag_mask, Hc, Hc * 0.5)
 
-        return Ht.reshape((a, r**2))
+        Ht = (
+            jnp.zeros((a, r, r), dtype=Hc.dtype)
+            .at[:, row_idx, col_idx]
+            .set(Hc_fill)
+            .at[:, col_idx, row_idx]
+            .set(Hc_fill)
+        )
+        return Ht.reshape(a, r * r)
 
 
 class CubicOperator(OpInfOperator):
